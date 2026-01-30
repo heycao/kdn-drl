@@ -39,10 +39,19 @@ class CustomLoggingCallback(BaseCallback):
             
         return True
 
-def train(total_timesteps, tfrecords_dir, eval_tfrecords_dir, model_path, n_envs, log_interval):
+def train(total_timesteps, tfrecords_dir, eval_tfrecords_dir, model_path, n_envs, log_interval, traffic_intensity, dataset_name, model_type):
+    # Extract dataset name if not provided
+    if dataset_name is None:
+        # Extract from tfrecords_dir, e.g., 'data/nsfnetbw/tfrecords/train' -> 'nsfnetbw'
+        dataset_name = tfrecords_dir.split('/')[-3] if len(tfrecords_dir.split('/')) >= 3 else 'unknown'
+    
+    # Create base save directory
+    base_save_dir = f"agents/{dataset_name}_{traffic_intensity}_{model_type}"
+    
     # Environment parameters
     env_kwargs = {
         "tfrecords_dir": tfrecords_dir,
+        "traffic_intensity": traffic_intensity,
         "alpha": 10.0,
         "max_steps": 50
     }
@@ -59,6 +68,7 @@ def train(total_timesteps, tfrecords_dir, eval_tfrecords_dir, model_path, n_envs
     # Initialize evaluation environment
     eval_env_kwargs = {
         "tfrecords_dir": eval_tfrecords_dir,
+        "traffic_intensity": traffic_intensity,
         "alpha": 10.0,
         "max_steps": 50
     }
@@ -89,7 +99,7 @@ def train(total_timesteps, tfrecords_dir, eval_tfrecords_dir, model_path, n_envs
     # Callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=5000 // n_envs,
-        save_path="./logs/checkpoints/",
+        save_path=f"{base_save_dir}/checkpoints/",
         name_prefix="ppo_model"
     )
     custom_logging_callback = CustomLoggingCallback()
@@ -128,8 +138,8 @@ def train(total_timesteps, tfrecords_dir, eval_tfrecords_dir, model_path, n_envs
     
     eval_callback = DelayedEvalCallback(
         eval_env,
-        best_model_save_path="./logs/best_model/",
-        log_path="./logs/eval_results/",
+        best_model_save_path=f"{base_save_dir}/best_model/",
+        log_path=f"{base_save_dir}/eval_results/",
         eval_freq=100000 // n_envs,  # Eval every ~10k steps
         n_eval_episodes=20000,
         deterministic=True,
@@ -149,17 +159,23 @@ def train(total_timesteps, tfrecords_dir, eval_tfrecords_dir, model_path, n_envs
     )
 
     # Save the final model
-    model.save(model_path)
-    print(f"Model saved to {model_path}")
+    final_model_path = f"{base_save_dir}/{model_path}" if not model_path.startswith('agents/') else model_path
+    model.save(final_model_path)
+    print(f"Final model saved to {final_model_path}")
+    print(f"Best model saved to {base_save_dir}/best_model/")
+    print(f"Checkpoints saved to {base_save_dir}/checkpoints/")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train SB3 PPO on AdaptivePathEnv")
-    parser.add_argument("--total_timesteps", type=int, default=5_000_000, help="Total training timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=2_000_000, help="Total training timesteps")
     parser.add_argument("--tfrecords_dir", type=str, default="data/nsfnetbw/tfrecords/train", help="Path to training TFRecords")
     parser.add_argument("--eval_tfrecords_dir", type=str, default="data/nsfnetbw/tfrecords/evaluate", help="Path to evaluation TFRecords")
-    parser.add_argument("--model_path", type=str, default="ppo_adaptive_path", help="Path to save the trained model")
+    parser.add_argument("--model_path", type=str, default="final_model", help="Filename for the final trained model")
     parser.add_argument("--n_envs", type=int, default=8, help="Number of parallel environments")
     parser.add_argument("--log_interval", type=int, default=10, help="Number of iterations between console logs")
+    parser.add_argument("--traffic_intensity", type=int, default=9, help="Traffic intensity for TFRecords filtering (default: 9)")
+    parser.add_argument("--dataset_name", type=str, default=None, help="Dataset name (auto-detected from tfrecords_dir if not provided)")
+    parser.add_argument("--model_type", type=str, default="PPO", help="Model type identifier (default: PPO)")
     
     args = parser.parse_args()
     
@@ -169,5 +185,8 @@ if __name__ == "__main__":
         eval_tfrecords_dir=args.eval_tfrecords_dir,
         model_path=args.model_path,
         n_envs=args.n_envs,
-        log_interval=args.log_interval
+        log_interval=args.log_interval,
+        traffic_intensity=args.traffic_intensity,
+        dataset_name=args.dataset_name,
+        model_type=args.model_type
     )

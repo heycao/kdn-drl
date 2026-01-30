@@ -15,7 +15,7 @@ class AdaptivePathEnv(gym.Env):
     Loads traffic scenarios from TFRecords.
     Reward based on Maximum Link Utilization (MLU) changes.
     """
-    def __init__(self, graph_path='data/nsfnetbw/graph_attr.txt', tfrecords_dir=None, alpha=10.0, max_steps=50):
+    def __init__(self, graph_path='data/nsfnetbw/graph_attr.txt', tfrecords_dir=None, traffic_intensity=9, alpha=10.0, max_steps=50):
         super().__init__()
         
         # Load topology via KDN
@@ -40,11 +40,12 @@ class AdaptivePathEnv(gym.Env):
         
         # Load TFRecords if provided
         self.tfrecords_dir = tfrecords_dir
+        self.traffic_intensity = traffic_intensity
         self.tfrecord_dataset = None
         self.tfrecord_iterator = None
         
         if tfrecords_dir:
-            self._init_tfrecords(tfrecords_dir)
+            self._init_tfrecords(tfrecords_dir, traffic_intensity)
         
         # Simulation state
         self.current_node = 0
@@ -59,11 +60,16 @@ class AdaptivePathEnv(gym.Env):
         self.alpha = alpha
         self.max_steps = max_steps
 
-    def _init_tfrecords(self, tfrecords_dir):
-        """Initialize TFRecord dataset and iterator."""
-        files = glob.glob(f"{tfrecords_dir}/*.tfrecords")
+    def _init_tfrecords(self, tfrecords_dir, traffic_intensity):
+        """Initialize TFRecord dataset and iterator.
+        
+        Filters files matching the pattern:
+        results_nsfnetbw_{traffic_intensity}_Routing_SP_k_*.tfrecords
+        """
+        pattern = f"{tfrecords_dir}/results_nsfnetbw_{traffic_intensity}_Routing_SP_k_*.tfrecords"
+        files = glob.glob(pattern)
         if not files:
-            raise FileNotFoundError(f"No tfrecords found in {tfrecords_dir}")
+            raise FileNotFoundError(f"No tfrecords found matching pattern: {pattern}")
         
         self.tfrecord_dataset = tf.data.TFRecordDataset(files)
         self.tfrecord_dataset = self.tfrecord_dataset.shuffle(buffer_size=10000)

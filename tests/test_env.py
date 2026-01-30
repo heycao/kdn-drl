@@ -4,7 +4,7 @@ from src.env import AdaptivePathEnv
 
 def test_env_initialization():
     """Verify that the environment initializes correctly with KDN."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     obs, info = env.reset()
     
     assert "current_node" in obs
@@ -19,7 +19,7 @@ def test_env_initialization():
 
 def test_env_edge_action_space():
     """Verify the action space is edge-based."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     assert env.action_space.n == env.num_edges
     
     # Test that we can take an action
@@ -35,7 +35,7 @@ def test_env_edge_action_space():
 
 def test_observation_structure():
     """Verify the observation dictionary structure."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     obs, info = env.reset()
     
     assert isinstance(obs["current_node"], np.ndarray)
@@ -44,7 +44,7 @@ def test_observation_structure():
 
 def test_tfrecord_loading():
     """Verify TFRecord loading works correctly."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     
     # Check that TFRecord dataset was initialized
     assert env.tfrecord_dataset is not None
@@ -62,7 +62,7 @@ def test_tfrecord_loading():
 
 def test_flat_to_pair_conversion():
     """Verify the flat index to (src, dst) pair conversion."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     
     # For 14 nodes, we have 14 * 13 = 182 pairs
     for flat_idx in range(182):
@@ -73,7 +73,7 @@ def test_flat_to_pair_conversion():
 
 def test_invalid_edge_action():
     """Verify that agent receives no reward and state unchanged for invalid edge."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     obs, info = env.reset()
     
     initial_node = env.current_node
@@ -107,7 +107,7 @@ def test_invalid_edge_action():
 
 def test_valid_edge_action():
     """Verify that agent moves correctly with valid edge and receives MLU-based reward."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     obs, info = env.reset()
     
     initial_node = env.current_node
@@ -149,7 +149,7 @@ def test_valid_edge_action():
 
 def test_mlu_calculation():
     """Verify incremental MLU calculation matches the official KDN calculation."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train')
+    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
     env.reset()
     
     # Initial state: no edges taken, MLU should be 0
