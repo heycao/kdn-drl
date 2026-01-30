@@ -1,0 +1,9 @@
+gymnasium
+stable-baselines3
+networkx
+numpy
+shimmy
+tensorflow
+pytest
+
+
