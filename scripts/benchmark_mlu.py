@@ -2,8 +2,9 @@
 """
 Benchmark script to evaluate Maximum Link Utilization (MLU) performance.
 
-Compares the trained agent's MLU against shortest path (SP) routing baseline
+Compares trained agents' MLU against shortest path (SP) routing baseline
 using TFRecords from the evaluation dataset.
+Supports both PPO and MaskablePPO agent types.
 """
 
 import os
@@ -14,11 +15,14 @@ import tensorflow as tf
 import glob
 from pathlib import Path
 from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
 from collections import defaultdict
 
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.env import AdaptivePathEnv
+from src.masked_env import MaskedAdaptivePathEnv
 from src.kdn import KDN
 
 
@@ -54,14 +58,28 @@ def flat_to_pair(flat_idx, num_nodes=14):
     return src, dst
 
 
-def evaluate_agent_mlu(agent_path, env, traffic_samples, max_episodes=1000):
-    """Evaluate trained agent's MLU on traffic samples."""
-    print(f"\nEvaluating agent from: {agent_path}")
+def evaluate_agent_mlu(agent_path, env, traffic_samples, max_episodes=1000, agent_type='PPO'):
+    """Evaluate trained agent's MLU on traffic samples.
+    
+    Args:
+        agent_path: Path to the trained model
+        env: Environment instance
+        traffic_samples: Traffic matrix samples
+        max_episodes: Maximum number of episodes to evaluate
+        agent_type: 'PPO' or 'MaskPPO'
+    """
+    print(f"\nEvaluating {agent_type} agent from: {agent_path}")
     
     if not os.path.exists(agent_path):
         raise FileNotFoundError(f"Agent model not found: {agent_path}")
     
-    model = PPO.load(agent_path)
+    # Load appropriate model type
+    if agent_type == 'MaskPPO':
+        model = MaskablePPO.load(agent_path)
+        use_masking = True
+    else:
+        model = PPO.load(agent_path)
+        use_masking = False
     
     mlus = []
     path_lengths = []
@@ -92,7 +110,12 @@ def evaluate_agent_mlu(agent_path, env, traffic_samples, max_episodes=1000):
         max_steps = 50
         
         while not done and not truncated and steps < max_steps:
-            action, _ = model.predict(obs, deterministic=True)
+            if use_masking:
+                # Get action mask for MaskablePPO
+                action_masks = env.action_masks()
+                action, _ = model.predict(obs, deterministic=True, action_masks=action_masks)
+            else:
+                action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, truncated, info = env.step(action)
             steps += 1
         
@@ -168,14 +191,24 @@ def evaluate_baseline_sp(env, traffic_samples, max_episodes=1000):
     return results
 
 
-def print_results(agent_results, baseline_results):
-    """Print comparison results."""
-    print("\n" + "="*70)
-    print("MLU BENCHMARK RESULTS")
-    print("="*70)
+def print_results(results_dict, baseline_results):
+    """Print comparison results for multiple agents.
     
-    print(f"\n{'Metric':<30} {'Agent (PPO)':<20} {'Baseline (SP)':<20}")
-    print("-"*70)
+    Args:
+        results_dict: Dictionary mapping agent names to their results
+        baseline_results: Baseline (SP) results
+    """
+    print("\n" + "="*90)
+    print("MLU BENCHMARK RESULTS")
+    print("="*90)
+    
+    # Build header
+    header_parts = [f"{'Metric':<30}"]
+    for agent_name in sorted(results_dict.keys()):
+        header_parts.append(f"{agent_name:<20}")
+    header_parts.append(f"{'Baseline (SP)':<20}")
+    print(" ".join(header_parts))
+    print("-"*90)
     
     metrics = [
         ('Mean MLU', 'mlu_mean'),
@@ -189,43 +222,57 @@ def print_results(agent_results, baseline_results):
     ]
     
     for label, key in metrics:
-        agent_val = agent_results[key]
+        row_parts = [f"{label:<30}"]
+        
+        for agent_name in sorted(results_dict.keys()):
+            agent_val = results_dict[agent_name][key]
+            if key == 'success_rate':
+                row_parts.append(f"{agent_val*100:.2f}%".ljust(20))
+            elif key == 'num_episodes':
+                row_parts.append(f"{int(agent_val)}".ljust(20))
+            else:
+                row_parts.append(f"{agent_val:.4f}".ljust(20))
+        
         baseline_val = baseline_results[key]
-        
         if key == 'success_rate':
-            agent_str = f"{agent_val*100:.2f}%"
-            baseline_str = f"{baseline_val*100:.2f}%"
+            row_parts.append(f"{baseline_val*100:.2f}%".ljust(20))
         elif key == 'num_episodes':
-            agent_str = f"{int(agent_val)}"
-            baseline_str = f"{int(baseline_val)}"
+            row_parts.append(f"{int(baseline_val)}".ljust(20))
         else:
-            agent_str = f"{agent_val:.4f}"
-            baseline_str = f"{baseline_val:.4f}"
+            row_parts.append(f"{baseline_val:.4f}".ljust(20))
         
-        print(f"{label:<30} {agent_str:<20} {baseline_str:<20}")
+        print(" ".join(row_parts))
     
     # Improvement calculation
-    print("\n" + "="*70)
-    print("PERFORMANCE COMPARISON")
-    print("="*70)
+    print("\n" + "="*90)
+    print("PERFORMANCE COMPARISON (vs Baseline)")
+    print("="*90)
     
-    mlu_improvement = ((baseline_results['mlu_mean'] - agent_results['mlu_mean']) / baseline_results['mlu_mean']) * 100
+    for agent_name in sorted(results_dict.keys()):
+        agent_results = results_dict[agent_name]
+        mlu_improvement = ((baseline_results['mlu_mean'] - agent_results['mlu_mean']) / baseline_results['mlu_mean']) * 100
+        
+        print(f"\n{agent_name}:")
+        print(f"  MLU Improvement: {mlu_improvement:+.2f}%")
+        if mlu_improvement > 0:
+            print(f"  ✅ {agent_name} performs BETTER than baseline (lower MLU)")
+        elif mlu_improvement < 0:
+            print(f"  ❌ {agent_name} performs WORSE than baseline (higher MLU)")
+        else:
+            print(f"  ➖ {agent_name} performs SAME as baseline")
     
-    print(f"\nMLU Improvement: {mlu_improvement:+.2f}%")
-    if mlu_improvement > 0:
-        print("✅ Agent performs BETTER than baseline (lower MLU)")
-    elif mlu_improvement < 0:
-        print("❌ Agent performs WORSE than baseline (higher MLU)")
-    else:
-        print("➖ Agent performs SAME as baseline")
-    
-    print("\n" + "="*70)
+    print("\n" + "="*90)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark MLU performance")
-    parser.add_argument("--agent_path", type=str, default="ppo_adaptive_path.zip", 
-                        help="Path to trained agent model")
+    parser.add_argument("--ppo_path", type=str, default="ppo_adaptive_path.zip", 
+                        help="Path to trained PPO agent model")
+    parser.add_argument("--maskppo_path", type=str, default=None, 
+                        help="Path to trained MaskPPO agent model")
+    parser.add_argument("--agent_type", type=str, default="PPO", 
+                        choices=['PPO', 'MaskPPO', 'all'],
+                        help="Agent type to benchmark: PPO, MaskPPO, or all")
     parser.add_argument("--tfrecords_dir", type=str, default="data/nsfnetbw/tfrecords/evaluate",
                         help="Path to evaluation TFRecords directory")
     parser.add_argument("--traffic_intensity", type=int, default=9,
@@ -242,11 +289,16 @@ def main():
     # Build TFRecord pattern
     pattern = f"{args.tfrecords_dir}/results_nsfnetbw_{args.traffic_intensity}_Routing_SP_k_*.tfrecords"
     
-    print("="*70)
-    print("MLU BENCHMARK - Evaluating Agent vs Baseline (Shortest Path)")
-    print("="*70)
+    print("="*90)
+    print("MLU BENCHMARK - Evaluating Agents vs Baseline (Shortest Path)")
+    print("="*90)
     print(f"\nConfiguration:")
-    print(f"  Agent: {args.agent_path}")
+    print(f"  Agent type: {args.agent_type}")
+    if args.agent_type in ['PPO', 'all']:
+        print(f"  PPO model: {args.ppo_path}")
+    if args.agent_type in ['MaskPPO', 'all']:
+        maskppo_path = args.maskppo_path or "maskppo_adaptive_path.zip"
+        print(f"  MaskPPO model: {maskppo_path}")
     print(f"  TFRecords pattern: {pattern}")
     print(f"  Traffic intensity: {args.traffic_intensity}")
     print(f"  Max episodes: {args.max_episodes}")
@@ -256,22 +308,55 @@ def main():
     traffic_samples = load_tfrecord_samples(pattern, num_samples=args.num_samples)
     print(f"Loaded {len(traffic_samples)} traffic samples")
     
-    # Initialize environment
-    print("\nInitializing environment...")
+    # Determine which agents to evaluate
+    agents_to_eval = []
+    if args.agent_type == 'all':
+        agents_to_eval = ['PPO', 'MaskPPO']
+    else:
+        agents_to_eval = [args.agent_type]
+    
+    # Collect results for all agents
+    results_dict = {}
+    
+    for agent_type in agents_to_eval:
+        if agent_type == 'PPO':
+            # Initialize PPO environment
+            print(f"\nInitializing environment for PPO...")
+            env = AdaptivePathEnv(
+                graph_path=args.graph_path,
+                tfrecords_dir=args.tfrecords_dir,
+                traffic_intensity=args.traffic_intensity
+            )
+            # Evaluate PPO agent
+            results_dict['PPO'] = evaluate_agent_mlu(
+                args.ppo_path, env, traffic_samples, args.max_episodes, agent_type='PPO'
+            )
+        
+        elif agent_type == 'MaskPPO':
+            # Initialize MaskPPO environment
+            print(f"\nInitializing masked environment for MaskPPO...")
+            env = MaskedAdaptivePathEnv(
+                graph_path=args.graph_path,
+                tfrecords_dir=args.tfrecords_dir,
+                traffic_intensity=args.traffic_intensity
+            )
+            # Evaluate MaskPPO agent
+            maskppo_path = args.maskppo_path or "maskppo_adaptive_path.zip"
+            results_dict['MaskPPO'] = evaluate_agent_mlu(
+                maskppo_path, env, traffic_samples, args.max_episodes, agent_type='MaskPPO'
+            )
+    
+    # Evaluate baseline (use regular env, doesn't matter which)
+    print("\nInitializing environment for baseline...")
     env = AdaptivePathEnv(
         graph_path=args.graph_path,
         tfrecords_dir=args.tfrecords_dir,
         traffic_intensity=args.traffic_intensity
     )
-    
-    # Evaluate agent
-    agent_results = evaluate_agent_mlu(args.agent_path, env, traffic_samples, args.max_episodes)
-    
-    # Evaluate baseline
     baseline_results = evaluate_baseline_sp(env, traffic_samples, args.max_episodes)
     
     # Print comparison
-    print_results(agent_results, baseline_results)
+    print_results(results_dict, baseline_results)
 
 
 if __name__ == "__main__":

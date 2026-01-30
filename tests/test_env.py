@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 from src.env import AdaptivePathEnv
+from src.masked_env import MaskedAdaptivePathEnv
 
 def test_env_initialization():
     """Verify that the environment initializes correctly with KDN."""
@@ -207,3 +208,93 @@ def test_max_steps_truncation():
     
     # Verify we either truncated or terminated
     assert truncated or terminated, "Episode should end either by truncation or termination"
+
+# ===== MaskedEnv Tests =====
+
+def test_masked_env_initialization():
+    """Verify MaskedAdaptivePathEnv initializes correctly."""
+    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
+    obs, info = env.reset()
+    
+    # Verify it behaves like regular environment
+    assert "current_node" in obs
+    assert "destination" in obs
+    assert "traffic" in obs
+    assert env.kdn is not None
+    assert env.num_edges > 0
+
+def test_action_masks_shape():
+    """Verify action_masks() returns correct shape."""
+    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
+    env.reset()
+    
+    masks = env.action_masks()
+    
+    assert isinstance(masks, np.ndarray)
+    assert masks.dtype == bool
+    assert masks.shape == (env.num_edges,)
+
+def test_action_masks_validity():
+    """Verify action_masks() correctly identifies valid actions."""
+    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
+    env.reset()
+    
+    current_node = env.current_node
+    visited = set(env.current_path)
+    masks = env.action_masks()
+    
+    # Check that all valid actions are masked as True
+    for idx, (u, v, key) in enumerate(env.edges):
+        if u == current_node and v not in visited:
+            assert masks[idx] == True, f"Edge {idx} from {u} to {v} should be valid"
+        else:
+            assert masks[idx] == False, f"Edge {idx} from {u} to {v} should be invalid"
+
+def test_action_masks_after_step():
+    """Verify action_masks() updates correctly after taking a step."""
+    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
+    env.reset()
+    
+    initial_node = env.current_node
+    initial_masks = env.action_masks()
+    
+    # Find a valid action
+    valid_action = None
+    for idx, mask in enumerate(initial_masks):
+        if mask:
+            valid_action = idx
+            break
+    
+    if valid_action is None:
+        pytest.skip("No valid actions found")
+    
+    # Take the action
+    env.step(valid_action)
+    
+    # Get new masks
+    new_masks = env.action_masks()
+    new_node = env.current_node
+    visited = set(env.current_path)
+    
+    # Verify masks are different if we moved to a different node
+    if new_node != initial_node:
+        assert not np.array_equal(initial_masks, new_masks), "Masks should change after moving to new node"
+    
+    # Verify new masks are correct for new node (considering visited nodes)
+    for idx, (u, v, key) in enumerate(env.edges):
+        if u == new_node and v not in visited:
+            assert new_masks[idx] == True, f"Edge {idx} from {u} to {v} should be valid"
+        else:
+            assert new_masks[idx] == False, f"Edge {idx} from {u} to {v} should be invalid"
+
+def test_masked_env_at_least_one_valid_action():
+    """Verify there's always at least one valid action (unless isolated)."""
+    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw/tfrecords/train', traffic_intensity=9)
+    
+    # Run multiple episodes to test different starting positions
+    for _ in range(10):
+        env.reset()
+        masks = env.action_masks()
+        
+        # Should have at least one valid action (network is connected)
+        assert masks.any(), f"Node {env.current_node} should have at least one valid outgoing edge"
