@@ -66,7 +66,7 @@ class AdaptivePathEnv(gym.Env):
             raise FileNotFoundError(f"No tfrecords found in {tfrecords_dir}")
         
         self.tfrecord_dataset = tf.data.TFRecordDataset(files)
-        self.tfrecord_dataset = self.tfrecord_dataset.shuffle(buffer_size=100)
+        self.tfrecord_dataset = self.tfrecord_dataset.shuffle(buffer_size=10000)
         self.tfrecord_dataset = self.tfrecord_dataset.repeat()
         self.tfrecord_iterator = iter(self.tfrecord_dataset)
         
@@ -174,7 +174,8 @@ class AdaptivePathEnv(gym.Env):
         truncated = self.current_step >= self.max_steps
         info = {
             'mlu': self.current_mlu,
-            'path_length': len(self.current_path)
+            'path_length': len(self.current_path),
+            'is_success': terminated
         }
         
         return self._get_obs(), reward, terminated, truncated, info
