@@ -874,8 +874,8 @@ class Datanet:
 
             m_result.append(new_result_row)
             m_traffic.append(new_traffic_row)
-        m_result = numpy.asmatrix(m_result)
-        m_traffic = numpy.asmatrix(m_traffic)
+        m_result = numpy.asarray(m_result)
+        m_traffic = numpy.asarray(m_traffic)
         s._set_performance_matrix(m_result)
         s._set_traffic_matrix(m_traffic)
         s._set_global_packets(numpy.round(globalPackets / sim_time, 6))
