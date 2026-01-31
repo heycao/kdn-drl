@@ -1,3 +1,21 @@
+[project]
+name = "kdn-drl"
+version = "0.1.0"
+description = "Knowledged-Defined Networking with Deep Reinforcement Learning"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "scipy",
+    "networkx",
+    "tqdm",
+    "rich",
+    "stable-baselines3",
+    "sb3-contrib",
+    "tensorboard",
+    "gymnasium",
+]
+
 [tool.pytest.ini_options]
 pythonpath = "."
 testpaths = ["tests"]

@@ -18,6 +18,8 @@ class MaskedAdaptivePathEnv(AdaptivePathEnv):
         1. The edge starts from the current node
         2. The edge does NOT lead to an already visited node (prevents loops)
         
+        If no forward actions exist (dead-end), allows backtracking to any adjacent node.
+        
         Returns:
             np.ndarray: Boolean array of shape (num_edges,) where True indicates
                        the action (edge) is valid from the current node.
@@ -25,9 +27,16 @@ class MaskedAdaptivePathEnv(AdaptivePathEnv):
         mask = np.zeros(self.num_edges, dtype=bool)
         visited = set(self.current_path)
         
+        # First pass: find edges that don't revisit nodes
         for i, (u, v, key) in enumerate(self.edges):
-            # Edge must start from current node AND not lead to visited node
             if u == self.current_node and v not in visited:
                 mask[i] = True
+        
+        # If no valid forward actions (dead-end), allow any outgoing edge
+        # This prevents the situation where all actions are masked
+        if not mask.any():
+            for i, (u, v, key) in enumerate(self.edges):
+                if u == self.current_node:
+                    mask[i] = True
         
         return mask

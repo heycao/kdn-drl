@@ -1,9 +1,11 @@
 gymnasium
 stable-baselines3
+sb3-contrib
 networkx
 numpy
 shimmy
 tensorflow
 pytest
+datanetAPI @ git+https://github.com/BNN-UPC/datanetAPI.git
 
 
