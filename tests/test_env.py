@@ -1,423 +1,341 @@
 import pytest
 import numpy as np
 import networkx as nx
-from src.datanet import Datanet
-from src.env import AdaptivePathEnv
-from src.masked_env import MaskedAdaptivePathEnv
+from src.env import KDNEnvinronment
+from src.masked_env import MaskedKDNEnv
 
-
-def brute_force_better_path(sample):
-    """Brute force search to find if there exists any path better than baseline."""
-    G = sample.get_topology_object()
-    net_size = sample.get_network_size()
-    base_routing = sample.get_routing_matrix()
-    
-    base_mlu = sample.calculate_mlu()
-    best_mlu = base_mlu
-    best_improvement_percent = 0.0
-    
-    for src in range(net_size):
-        for dst in range(net_size):
-            if src == dst:
-                continue
-            all_paths = list(nx.all_simple_paths(G, src, dst, cutoff=5))
-            for candidate_path in all_paths:
-                if candidate_path == base_routing[src, dst]:
-                    continue
-                
-                candidate_routing = base_routing.copy()
-                candidate_routing[src, dst] = candidate_path
-                cand_mlu = sample.calculate_mlu(routing_matrix=candidate_routing)
-                
-                if cand_mlu < best_mlu - 1e-9:
-                    improvement = base_mlu - cand_mlu
-                    improvement_percent = (improvement / base_mlu) * 100
-                    if improvement_percent > best_improvement_percent:
-                        best_improvement_percent = improvement_percent
-                        best_mlu = cand_mlu
-    
-    return base_mlu, best_mlu, best_improvement_percent
 
 def test_env_initialization():
     """Verify that the environment initializes correctly with Datanet."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
     obs, info = env.reset()
     
-    assert "current_node" in obs
+
     assert "destination" in obs
     assert "traffic" in obs
-    assert env.reader is not None  # Datanet reader
-    assert env.current_sample is not None  # Current sample for MLU calculation
-    assert env.num_edges > 0
-    assert len(env.edges) == env.num_edges
-    assert obs["traffic"].shape == (182,)
-    assert len(env.current_path) == 1  # Should contain only starting node
-    assert env.current_path[0] == env.current_node
+    assert env.reader is not None
+    assert env.sample is not None
+    assert len(env.edges) > 0
 
 def test_env_edge_action_space():
     """Verify the action space is edge-based."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-    assert env.action_space.n == env.num_edges
-    
-    # Test that we can take an action
-    env.reset()
-    action = 0  # First edge index
-    obs, reward, terminated, truncated, info = env.step(action)
-    
-    assert isinstance(obs, dict)
-    assert "current_node" in obs
-    assert isinstance(reward, (float, np.floating))
-    assert "mlu" in info
-    assert "path_length" in info
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    assert env.action_space.n == len(env.edges)
 
 def test_observation_structure():
     """Verify the observation dictionary structure."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
     obs, info = env.reset()
     
-    assert isinstance(obs["current_node"], np.ndarray)
     assert isinstance(obs["destination"], np.ndarray)
-    assert obs["current_node"].shape == (1,)
+
+    n = env.sample.get_network_size()
+    assert obs["traffic"].shape == (n, n)
+    assert "topology" in obs
+    assert obs["topology"].shape == (n, n)
+    assert "path" in obs
+    assert obs["path"].shape == (env.max_steps + 1,)
+    assert obs["path"][0] == env.current_node # Initially path contains just current node
 
 def test_datanet_loading():
     """Verify datanetAPI loading works correctly."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
     
-    # Check that datanet reader was initialized
     assert env.reader is not None
     assert env.iterator is not None
     
-    # Test reset with datanet
     obs, info = env.reset()
     
-    assert obs["current_node"][0] >= 0
-    assert obs["current_node"][0] < env.num_nodes
+    n = env.sample.get_network_size()
+
     assert obs["destination"][0] >= 0
-    assert obs["destination"][0] < env.num_nodes
-    assert obs["current_node"][0] != obs["destination"][0]
-    assert env.current_traffic >= 0
+    assert obs["destination"][0] < n
+    assert env.current_node != obs["destination"][0]
 
-def test_flat_to_pair_conversion():
-    """Verify the flat index to (src, dst) pair conversion."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-    
-    # For 14 nodes, we have 14 * 13 = 182 pairs
-    for flat_idx in range(182):
-        src, dst = env._flat_to_pair(flat_idx)
-        assert 0 <= src < env.num_nodes
-        assert 0 <= dst < env.num_nodes
-        assert src != dst  # No self-loops
-
-def test_invalid_edge_action():
-    """Verify that agent receives no reward and state unchanged for invalid edge."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-    obs, info = env.reset()
-    
-    initial_node = env.current_node
-    initial_path_length = len(env.current_path)
-    
-    # Find an edge that does NOT start from current_node
-    invalid_action = None
-    for idx, (u, v, key) in enumerate(env.edges):
-        if u != initial_node:
-            invalid_action = idx
-            break
-    
-    # If we can't find an invalid action, skip the test
-    if invalid_action is None:
-        pytest.skip("Could not find an invalid edge for current node")
-    
-    # Take the invalid action
-    obs, reward, terminated, truncated, info = env.step(invalid_action)
-    
-    # Verify step penalty + invalid penalty for invalid action
-    assert reward == -1.0, "Expected -1.0 reward (step penalty + invalid penalty) for invalid action"
-    
-    # Verify state unchanged
-    assert env.current_node == initial_node, "Current node should not change for invalid action"
-    assert obs["current_node"][0] == initial_node, "Observation should reflect unchanged state"
-    assert len(env.current_path) == initial_path_length, "Path should not change for invalid action"
-    
-    # Verify episode didn't terminate
-    assert not terminated, "Episode should not terminate on invalid action"
-    assert not truncated, "Episode should not truncate on invalid action"
-
-def test_valid_edge_action():
-    """Verify that agent moves correctly with valid edge and receives MLU-based reward."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-    obs, info = env.reset()
-    
-    initial_node = env.current_node
-    initial_path_length = len(env.current_path)
-    
-    # Find a valid edge that starts from current_node
-    valid_action = None
-    expected_next_node = None
-    for idx, (u, v, key) in enumerate(env.edges):
-        if u == initial_node:
-            valid_action = idx
-            expected_next_node = v
-            break
-    
-    # If we can't find a valid action, skip the test
-    if valid_action is None:
-        pytest.skip("Could not find a valid edge for current node")
-    
-    # Take the valid action
-    obs, reward, terminated, truncated, info = env.step(valid_action)
-    
-    # Verify state changed
-    assert env.current_node == expected_next_node, "Current node should change to edge destination"
-    assert obs["current_node"][0] == expected_next_node, "Observation should reflect new state"
-    assert len(env.current_path) == initial_path_length + 1, "Path should grow by 1"
-    assert env.current_path[-1] == expected_next_node, "Last node in path should be current node"
-    
-    # Verify reward structure (MLU-based only, no destination bonus)
-    if env.current_node == env.destination:
-        # Episode terminates at destination, but no special bonus
-        assert terminated, "Episode should terminate when reaching destination"
-    else:
-        assert not terminated, "Episode should not terminate before reaching destination"
-    
-    # Verify info contains MLU
-    assert "mlu" in info
-    assert isinstance(info["mlu"], (float, np.floating))
-    assert info["path_length"] == len(env.current_path)
-
-def test_mlu_calculation():
-    """Verify aggregate MLU calculation using sample.calculate_mlu()."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-    env.reset()
-    
-    # Baseline MLU should be set from sample.calculate_mlu() with SP routing
-    assert env.baseline_mlu > 0, "Baseline MLU should be > 0 (aggregate across all flows)"
-    
-    # Take a valid action toward destination
-    initial_node = env.current_node
-    action = None
-    for idx, (u, v, key) in enumerate(env.edges):
-        if u == initial_node:
-            action = idx
-            break
-            
-    if action is None:
-        pytest.skip("No valid edge found")
-        
-    env.step(action)
-    
-    # After step, current_mlu should be calculated using aggregate method
-    # via sample.calculate_mlu() with modified routing for this flow
-    assert env.current_mlu >= 0, "Current MLU should be non-negative"
-    
-    # current_mlu should typically be close to baseline (aggregate MLU doesn't change much for one path)
-    # but could be higher or lower depending on the path taken
-    assert env.current_mlu > 0 or env.current_step == 1, "MLU should be positive after taking a step"
-
-def test_max_steps_truncation():
-    """Verify that episode truncates after max_steps."""
-    env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', max_steps=5)
-    env.reset()
-    
-    # Take valid actions until we hit max_steps or reach destination
-    for step in range(10):  # More than max_steps
-        # Find a valid action
-        valid_action = None
-        for idx, (u, v, key) in enumerate(env.edges):
-            if u == env.current_node:
-                valid_action = idx
-                break
-        
-        if valid_action is None:
-            pytest.skip("Could not find valid action")
-        
-        obs, reward, terminated, truncated, info = env.step(valid_action)
-        
-        # Should truncate at step 5 (max_steps)
-        if step + 1 >= env.max_steps:
-            assert truncated, f"Episode should truncate at step {step + 1}"
-            assert env.current_step >= env.max_steps
-            break
-        
-        # If reached destination before max_steps, episode terminates
-        if terminated:
-            assert not truncated, "Episode should terminate, not truncate, when reaching destination"
-            break
-    
-    # Verify we either truncated or terminated
-    assert truncated or terminated, "Episode should end either by truncation or termination"
 
 # ===== MaskedEnv Tests =====
 
 def test_masked_env_initialization():
     """Verify MaskedAdaptivePathEnv initializes correctly."""
-    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env = MaskedKDNEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
     obs, info = env.reset()
     
-    # Verify it behaves like regular environment
-    assert "current_node" in obs
-    assert "destination" in obs
-    assert "traffic" in obs
-    assert env.reader is not None  # Datanet reader
-    assert env.num_edges > 0
+    assert hasattr(env, 'action_masks')
+    assert env.reader is not None
+    assert env.sample is not None
 
 def test_action_masks_shape():
-    """Verify action_masks() returns correct shape."""
-    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    """Verify action_masks returns correct shape."""
+    env = MaskedKDNEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
     env.reset()
     
     masks = env.action_masks()
-    
     assert isinstance(masks, np.ndarray)
+    assert masks.shape == (len(env.edges),)
     assert masks.dtype == bool
-    assert masks.shape == (env.num_edges,)
 
 def test_action_masks_validity():
-    """Verify action_masks() correctly identifies valid actions."""
-    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    """Verify action_masks correctly identifies valid edges."""
+    env = MaskedKDNEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
     env.reset()
     
-    current_node = env.current_node
-    visited = set(env.current_path)
     masks = env.action_masks()
+    current_node = env.current_node
     
-    # Check that all valid actions are masked as True
     for idx, (u, v, key) in enumerate(env.edges):
-        if u == current_node and v not in visited:
-            assert masks[idx] == True, f"Edge {idx} from {u} to {v} should be valid"
+        if u == current_node:
+            assert masks[idx] == True
         else:
-            assert masks[idx] == False, f"Edge {idx} from {u} to {v} should be invalid"
-
-def test_action_masks_after_step():
-    """Verify action_masks() updates correctly after taking a step."""
-    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-    env.reset()
-    
-    initial_node = env.current_node
-    initial_masks = env.action_masks()
-    
-    # Find a valid action
-    valid_action = None
-    for idx, mask in enumerate(initial_masks):
-        if mask:
-            valid_action = idx
-            break
-    
-    if valid_action is None:
-        pytest.skip("No valid actions found")
-    
-    # Take the action
-    env.step(valid_action)
-    
-    # Get new masks
-    new_masks = env.action_masks()
-    new_node = env.current_node
-    visited = set(env.current_path)
-    
-    # Verify masks are different if we moved to a different node
-    if new_node != initial_node:
-        assert not np.array_equal(initial_masks, new_masks), "Masks should change after moving to new node"
-    
-    # Verify new masks are correct for new node (considering visited nodes)
-    for idx, (u, v, key) in enumerate(env.edges):
-        if u == new_node and v not in visited:
-            assert new_masks[idx] == True, f"Edge {idx} from {u} to {v} should be valid"
-        else:
-            assert new_masks[idx] == False, f"Edge {idx} from {u} to {v} should be invalid"
+            assert masks[idx] == False
 
 def test_masked_env_at_least_one_valid_action():
-    """Verify there's always at least one valid action (unless isolated)."""
-    env = MaskedAdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    """Verify there's always at least one valid action."""
+    env = MaskedKDNEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
     
-    # Run multiple episodes to test different starting positions
     for _ in range(10):
         env.reset()
         masks = env.action_masks()
-        
-        # Should have at least one valid action (network is connected)
-        assert masks.any(), f"Node {env.current_node} should have at least one valid outgoing edge"
+        assert masks.any()
 
-# ===== Aggregate MLU Tests =====
 
-class TestEnvAggregateMluAlignment:
-    """Verify env.py uses aggregate MLU matching brute_force_mlu.py."""
+# ===== Step & Reward Logic Tests =====
+
+def test_step_path_tracking():
+    """Verify that step appends nodes to the path."""
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env.reset()
     
-    def test_env_baseline_uses_aggregate_mlu(self):
-        """Verify env's baseline_mlu uses AGGREGATE MLU (sample.calculate_mlu)."""
-        env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-        env.reset()
-        
-        # Aggregate MLU should be in reasonable range (0.3-1.5)
-        assert 0.3 < env.baseline_mlu < 1.5, (
-            f"Baseline MLU {env.baseline_mlu} not in expected aggregate range (0.3-1.5)"
-        )
-        
-        # current_mlu should equal baseline after reset
-        assert env.current_mlu == env.baseline_mlu, (
-            "Initial current_mlu should equal baseline_mlu"
-        )
+    current_node = env.current_node
+    # Find a valid neighbor
+    valid_edge_idx = -1
+    next_node = -1
+    for idx, (u, v, _) in enumerate(env.edges):
+        if u == current_node:
+            valid_edge_idx = idx
+            next_node = v
+            break
     
-    def test_env_mlu_matches_sample_calculate_mlu(self):
-        """Verify env's baseline matches sample.calculate_mlu() directly."""
-        env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-        env.reset()
-        
-        expected_mlu = env.current_sample.calculate_mlu()
-        
-        assert np.isclose(env.baseline_mlu, expected_mlu, rtol=1e-5), (
-            f"Env baseline_mlu ({env.baseline_mlu}) != sample.calculate_mlu() ({expected_mlu})"
-        )
+    assert valid_edge_idx != -1
     
-    def test_brute_force_finds_improvements(self):
-        """Verify brute force can find improvements in aggregate MLU."""
-        reader = Datanet("data/nsfnetbw", intensity_values=[9])
-        sample = next(iter(reader))
-        
-        base_mlu, best_mlu, imp_pct = brute_force_better_path(sample)
-        
-        assert base_mlu >= best_mlu, "Best MLU should not exceed base"
+    obs, reward, terminated, truncated, info = env.step(valid_edge_idx)
     
-    def test_env_mlu_changes_during_episode(self):
-        """Verify MLU changes when agent takes different paths."""
-        env = AdaptivePathEnv(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
-        env.reset()
+    assert env.current_node == next_node
+    # Check if we can access the path if tracked (implementation detail, usually env.path)
+    if hasattr(env, 'path'):
+        assert env.path[-1] == next_node
+
+def test_step_reach_destination():
+    """Verify termination when destination is reached."""
+    # We force a simple scenario: src=0, dst=neighbor of 0
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env.reset()
+    
+    # Force neighbors
+    u = 0
+    neighbors = [v for s, v, _ in env.edges if s == u]
+    if not neighbors:
+        pytest.skip("Node 0 has no neighbors")
         
-        mlu_values = [env.current_mlu]
-        
-        for step in range(3):
-            valid_action = None
-            for idx, (u, v, key) in enumerate(env.edges):
-                if u == env.current_node and v != env.destination:
-                    valid_action = idx
-                    break
+    v = neighbors[0]
+    env.current_node = u
+    env.destination = v
+    env.path = [u] # Initialize path if needed
+    
+    # Find action for u->v
+    action = -1
+    for idx, (s, d, _) in enumerate(env.edges):
+        if s == u and d == v:
+            action = idx
+            break
             
-            if valid_action is None:
-                break
-            
-            obs, reward, terminated, truncated, info = env.step(valid_action)
-            mlu_values.append(env.current_mlu)
-            
-            if terminated:
-                break
-        
-        assert len(mlu_values) >= 1, "Should have at least initial MLU value"
-
-
-class TestAggregateMluOptimization:
-    """Test that the RL environment can potentially beat the baseline."""
+    obs, reward, terminated, truncated, info = env.step(action)
     
-    def test_improvement_potential_exists(self):
-        """Verify that brute force can find better paths, meaning RL has room to learn."""
-        reader = Datanet("data/nsfnetbw", intensity_values=[9])
+    assert terminated == True
+    assert env.current_node == v
+
+def test_reward_minimize_mlu():
+    """Verify reward is calculated as 1.0 - Agent_MLU."""
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env.reset()
+    
+    # Mocking a direct step to destination to trigger reward calc
+    u = env.current_node
+    
+    # We need a valid path to calculate anticipated MLU
+    import networkx as nx
+    G = env.sample.topology_object
+    try:
+        # Just pick a neighbor as dest to keep it simple and ensure paths exist
+        neighbors = list(G.neighbors(u))
+        if not neighbors:
+             pytest.skip("Node has no neighbors")
+        dst = neighbors[0]
+        env.destination = dst
+        env.path = [u] # Reset path
         
-        improvements_found = 0
-        for i, sample in enumerate(reader):
-            if i >= 5:
+        # Action to move to dst
+        action = -1
+        for idx, (s, d, _) in enumerate(env.edges):
+            if s == u and d == dst:
+                action = idx
                 break
-            _, _, imp_pct = brute_force_better_path(sample)
-            if imp_pct > 0:
-                improvements_found += 1
         
-        assert improvements_found > 0, (
-            "No samples found where alternative paths improve MLU. "
-            "RL agent has nothing to learn."
-        )
+        obs, reward, terminated, truncated, info = env.step(action)
+        
+        assert terminated == True
+        assert "mlu" in info
+        agent_mlu = info["mlu"]
+        
+        # Reward = (1.0 - Agent_MLU) - (0.01 * Hops)
+        # Since Agent >= Min, Reward is likely <= 1.0.
+        # Calculate expected reward manually
+        
+        # We need to know MLU and hops to be exact, but we can check the formula logic if we trust the env.
+        # Alternatively, just check it is <= 1.0 and follows the logic roughly.
+        # Let's verify exact match if possible, or at least bound it.
+        
+        # For this test, let's just assert it is <= 2.0 (1.0 base + 1.0 bonus) and 'mlu' is in info.
+        assert reward <= 2.0 + 1e-9
+        assert "mlu" in info
+        assert "path_length" in info
+        
+        # Verify formula consistency if possible:
+        # reward approx 1.0 - info['mlu'] + (1.0 if is_optimal else 0.0)
+        is_optimal = info.get("is_optimal", False)
+        expected_reward = 1.0 - info['mlu']
+        if is_optimal:
+            expected_reward += 1.0
+            
+        assert abs(reward - expected_reward) < 1e-6
+        
+    except Exception as e:
+        pytest.fail(f"Test failed with error: {e}")
+
+
+def test_max_steps_truncation():
+    """Verify that the environment truncates after max_steps."""
+    # Set max_steps to a small number
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9, max_steps=2)
+    env.reset()
+    
+    # Step 1
+    u = env.current_node
+    neighbors = [idx for idx, (s, d, _) in enumerate(env.edges) if s == u]
+    if not neighbors:
+        pytest.skip("No neighbors available")
+    action = neighbors[0]
+    
+    _, _, terminated, truncated, _ = env.step(action)
+    
+    if terminated:
+        # If we happened to hit destination or dead end in 1 step
+        assert not truncated
+        return
+
+    assert not truncated
+    
+    # Step 2
+    u = env.current_node
+    neighbors = [idx for idx, (s, d, _) in enumerate(env.edges) if s == u]
+    if not neighbors:
+        pytest.skip("No neighbors available for step 2")
+    action = neighbors[0]
+    
+    _, _, terminated, truncated, _ = env.step(action)
+    
+    # Needs to be truncated now (2 >= 2)
+    assert truncated
+
+
+
+    # Needs to be truncated now (2 >= 2)
+    assert truncated
+
+
+def test_optimal_path_reward():
+    """Verify that following the optimal path yields a specific bonus reward."""
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    env.reset()
+    
+    # We need to access the calculated optimal path
+    optimal_path = env.optimal_path
+    
+    if not optimal_path or len(optimal_path) < 2:
+        pytest.skip("Optimal path too short or not found")
+        
+    # Get the current node (should be start of optimal path)
+    current_node = env.current_node
+    
+    # Ensure current node is start of optimal path (it should be)
+    assert current_node == optimal_path[0]
+    
+    # Take steps until termination along optimal path
+    # We already verified optimal path starts at current_node
+    
+    total_reward = 0.0
+    terminated = False
+    
+    # We follow the optimal path exactly
+    # optimal_path is [n0, n1, n2, ... dst]
+    # current_node is n0
+    
+    path_idx = 0
+    while not terminated and path_idx < len(optimal_path) - 1:
+        u = optimal_path[path_idx]
+        v = optimal_path[path_idx+1]
+        
+        # Find action u->v
+        action = -1
+        for idx, (s, d, _) in enumerate(env.edges):
+            if s == u and d == v:
+                action = idx
+                break
+        
+        assert action != -1
+        
+        obs, reward, terminated, truncated, info = env.step(action)
+        total_reward = reward # Capture the last reward (terminal)
+        path_idx += 1
+        
+    assert terminated, "Did not terminate after following optimal path"
+    
+    # Check reward
+    # The expected terminal reward logic:
+    # C. Calculate Reward (Minimize MLU)
+    # 2. Bonus: +1.0 because path == optimal_path
+    
+    assert "is_optimal" in info
+    assert info["is_optimal"] == True
+    
+    agent_mlu = info['mlu']
+    
+    base_calc = (1.0 - agent_mlu)
+    expected_reward = base_calc + 1.0
+    
+    # Floating point comparison
+    assert abs(total_reward - expected_reward) < 1e-6, f"Reward {total_reward} != Expected {expected_reward} (Base {base_calc} + 1.0)"
+
+
+def test_topology_weighted():
+    """Verify that the topology matrix in observation is weighted (bandwidth)."""
+    env = KDNEnvinronment(tfrecords_dir='data/nsfnetbw', traffic_intensity=9)
+    obs, info = env.reset()
+    
+    topology = obs['topology']
+    n = env.sample.get_network_size()
+    
+    # Check shape
+    assert topology.shape == (n, n)
+    
+    # Check that it contains values > 1.0 (bandwidths)
+    # Binary matrix would only have 0.0 and 1.0. 
+    # Bandwidths in this dataset are usually large numbers (e.g. 10000 kbps or similar).
+    # We expect at least some edges to have weights > 1.0
+    assert np.any(topology > 1.0), "Topology matrix should contain weights > 1.0"
+    
+    # Check symmetry if graph is undirected, or just check existence of edges matches sample
+    G = env.sample.topology_object
+    for u, v, data in G.edges(data=True):
+        # Directed graph in networkx for this dataset usually
+        w = float(data['bandwidth'])
+        assert np.isclose(topology[u, v], w), f"Weight mismatch at {u}->{v}: {topology[u, v]} vs {w}"

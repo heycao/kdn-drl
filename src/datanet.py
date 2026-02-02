@@ -485,6 +485,101 @@ class Sample:
 
         return self.traffic_matrix[src, dst]
 
+    def calculate_background_loads(self, src, dst):
+        """Calculates link loads from all flows except the target src->dst flow."""
+        G = self.topology_object
+        traffic_matrix = self.traffic_matrix
+        routing_matrix = self.routing_matrix
+        net_size = self.get_network_size()
+        
+        link_loads = {(u, v): 0.0 for u, v in G.edges()}
+        
+        for s in range(net_size):
+            for d in range(net_size):
+                if s == d: continue
+                if s == src and d == dst: continue # Skip the target flow
+                
+                path = routing_matrix[s, d]
+                if not isinstance(path, list): continue # In case path is missing/None
+                
+                traffic = traffic_matrix[s, d]
+                # Match Datanet logic for bandwidth extraction
+                bw = traffic.get('AggInfo', {}).get('AvgBw', 0.0)
+                if 'Flows' in traffic and '0' in traffic['Flows']:
+                    bw = traffic['Flows']['0']['AvgBw']
+                
+                for i in range(len(path) - 1):
+                    u, v = path[i], path[i+1]
+                    if (u, v) in link_loads:
+                        link_loads[(u, v)] += bw
+                        
+        return link_loads
+
+    def calculate_max_utilization(self, path, link_loads):
+        """Calculates MLU given a specific path for the target flow and background loads."""
+        # We process on the fly without deepcopying link_loads entire dict if possible,
+        # but link_loads is small (NSFNet ~42 links). Copy is cheap.
+        current_loads = link_loads.copy()
+        G = self.topology_object
+        src, dst = path[0], path[-1]
+        
+        traffic = self.traffic_matrix[src, dst]
+        bw = traffic.get('AggInfo', {}).get('AvgBw', 0.0)
+        if 'Flows' in traffic and '0' in traffic['Flows']:
+            bw = traffic['Flows']['0']['AvgBw']
+            
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i+1]
+            if (u, v) in current_loads:
+                current_loads[(u, v)] += bw
+        
+        # Calculate utilizations
+        max_u = 0.0
+        for (u, v), load in current_loads.items():
+            cap_info = G[u][v][0]['bandwidth']
+            cap = float(cap_info)
+            if cap > 0:
+                u_val = load / cap
+                if u_val > max_u:
+                    max_u = u_val
+                
+        return max_u
+
+    def search_optimal_path(self, src, dst, bg_loads, max_steps=100):
+        """
+        Brute-force search for the path that minimizes MLU.
+        Returns the list of nodes representing the optimal path.
+        """
+        G = self.topology_object
+        best_path = None
+        min_mlu = float('inf')
+        min_hops = float('inf')
+        
+        # Limit cutoff to reasonable depth to prevent explosion in large graphs
+        # For NSFNet (14 nodes), max diameter is small, but max_steps serves as safety.
+        # simple_paths can be exponential, but for small graphs it's okay.
+        try:
+            for path in networkx.all_simple_paths(G, source=src, target=dst, cutoff=max_steps):
+                mlu = self.calculate_max_utilization(path, bg_loads)
+                hops = len(path)
+                
+                # Minimizing MLU primarily, Hops secondarily
+                if mlu < min_mlu:
+                    min_mlu = mlu
+                    min_hops = hops
+                    best_path = path
+                elif mlu == min_mlu:
+                    if hops < min_hops:
+                        min_hops = hops
+                        best_path = path
+        except Exception:
+            # Fallback to shortest path if something goes wrong
+            try:
+                best_path = networkx.shortest_path(G, src, dst, weight='weight')
+            except networkx.NetworkXNoPath:
+                best_path = None
+                
+        return best_path
 
 class Datanet:
     """

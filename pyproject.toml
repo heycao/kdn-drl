@@ -14,6 +14,7 @@ dependencies = [
     "sb3-contrib",
     "tensorboard",
     "gymnasium",
+    "joblib>=1.5.3",
 ]
 
 [tool.pytest.ini_options]
