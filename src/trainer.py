@@ -48,8 +48,8 @@ class CustomLoggingCallback(BaseCallback):
             self.logger.record("rollout/mlu", np.mean(self.mlus))
         if len(self.successes) > 0:
             self.logger.record("rollout/success_rate", np.mean(self.successes))
-        if len(self.optimal_rates) > 0:
-            self.logger.record("rollout/optimal_rate", np.mean(self.optimal_rates))
+        # if len(self.optimal_rates) > 0:
+        #     self.logger.record("rollout/optimal_rate", np.mean(self.optimal_rates))
         if len(self.optimal_sp_rates) > 0:
             self.logger.record("rollout/optimal_sp_rate", np.mean(self.optimal_sp_rates))
         if len(self.improvements) > 0:
@@ -197,13 +197,13 @@ class Trainer:
             policy_kwargs=policy_kwargs,
             verbose=1,
             learning_rate=3e-4,
-            n_steps=512,   
-            batch_size=128, 
+            n_steps=2048,   
+            batch_size=64, 
             n_epochs=10,
-            gamma=0.9,
-            gae_lambda=0.95,
-            clip_range=0.2,
-            ent_coef=0.01,
+            gamma=0.99,
+            # gae_lambda=0.95,
+            # clip_range=0.2,
+            # ent_coef=0.01,
             tensorboard_log="./logs/maskppo_tensorboard/",
             device=self.device
         )

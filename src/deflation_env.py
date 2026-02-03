@@ -12,7 +12,7 @@ class DeflationEnv(gym.Env):
     Action Space: Discrete(num_edges) - Remove edge at index.
     Observation Space: Same as KDNEnvinronment, reflecting the modified topology.
     """
-    def __init__(self, tfrecords_dir=None, traffic_intensity=9, max_steps=100, prefiltered_samples=None, calc_optimal=False):
+    def __init__(self, tfrecords_dir=None, traffic_intensity=9, max_steps=5, prefiltered_samples=None, calc_optimal=False):
         super().__init__()
         
         if not tfrecords_dir:
@@ -188,14 +188,17 @@ class DeflationEnv(gym.Env):
         # Reward = (Best So Far - New MLU) * 10 
         current_mlu = self.sample.calculate_max_utilization(new_path, self.bg_loads)
         
-        # Best-So-Far Strategy: Only reward if we beat the absolute best found this episode
+        # Dense Reward Signal
+        # Use gap between Original MLU and Current MLU
+        # If we improved by 10%, we get +1.0.
+        # If we degraded, we get negative reward.
+        gap = self.original_mlu - current_mlu
+        reward = gap * 10.0
+        
+        # Update best so far for tracking, even if not used in reward directly
         if current_mlu < self.min_mlu_so_far:
-            improvement = self.min_mlu_so_far - current_mlu
-            reward = (improvement * 100) ** 2
             self.min_mlu_so_far = current_mlu
             self.best_path_so_far = list(new_path)
-        else:
-            reward = 0.0
         
         # Scale reward significantly
         # reward is already calculated above
