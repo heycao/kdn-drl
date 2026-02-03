@@ -7,9 +7,10 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
-from tqdm.rich import tqdm
+from tqdm import tqdm
 
 from src.masked_env import MaskedKDNEnv
+from src.deflation_env import DeflationEnv
 from src.gcn import GCNFeatureExtractor
 from src.gat import GATFeatureExtractor
 from src.datanet import Datanet
@@ -25,7 +26,7 @@ class CustomLoggingCallback(BaseCallback):
         self.successes = deque(maxlen=100)
         self.optimal_rates = deque(maxlen=100)
         self.optimal_sp_rates = deque(maxlen=100)
-        self.mlu_improvements = deque(maxlen=100)
+        self.improvements = deque(maxlen=100)
 
     def _on_step(self) -> bool:
         # Check if any of the environments finished an episode
@@ -39,8 +40,8 @@ class CustomLoggingCallback(BaseCallback):
                     self.optimal_rates.append(float(info['is_optimal']))
                 if 'is_optimal_shortest' in info:
                     self.optimal_sp_rates.append(float(info['is_optimal_shortest']))
-                if 'mlu_improvement' in info:
-                    self.mlu_improvements.append(info['mlu_improvement'])
+                if 'improvement' in info:
+                    self.improvements.append(info['improvement'])
         
         # Record metrics if we have data
         if len(self.mlus) > 0:
@@ -51,8 +52,8 @@ class CustomLoggingCallback(BaseCallback):
             self.logger.record("rollout/optimal_rate", np.mean(self.optimal_rates))
         if len(self.optimal_sp_rates) > 0:
             self.logger.record("rollout/optimal_sp_rate", np.mean(self.optimal_sp_rates))
-        if len(self.mlu_improvements) > 0:
-            self.logger.record("rollout/mlu_improvement", np.mean(self.mlu_improvements))
+        if len(self.improvements) > 0:
+            self.logger.record("rollout/improvement", np.mean(self.improvements))
             
         return True
 
@@ -64,7 +65,7 @@ def mask_fn(env):
 class Trainer:
     def __init__(self, tfrecords_dir, traffic_intensity, data_filter="all", n_envs=8, 
                  dataset_name=None, model_type="MaskPPO", gnn_type="gcn", 
-                 device=None):
+                 env_type="kdn", device=None):
         self.tfrecords_dir = tfrecords_dir
         self.traffic_intensity = traffic_intensity
         self.data_filter = data_filter
@@ -72,6 +73,7 @@ class Trainer:
         self.dataset_name = dataset_name or os.path.basename(os.path.normpath(tfrecords_dir))
         self.model_type = model_type
         self.gnn_type = gnn_type
+        self.env_type = env_type
         
         # Device detection
         if device:
@@ -83,7 +85,7 @@ class Trainer:
             elif torch.cuda.is_available():
                 self.device = "cuda"
         
-        self.base_save_dir = f"agents/{self.dataset_name}_{self.traffic_intensity}_{self.model_type}_{self.gnn_type}"
+        self.base_save_dir = f"agents/{self.dataset_name}_{self.traffic_intensity}_{self.model_type}_{self.gnn_type}_{self.env_type}"
         print(f"Trainer initialized on device {self.device}. Save dir: {self.base_save_dir}")
 
     def pre_process_data(self, max_samples=2000):
@@ -156,15 +158,19 @@ class Trainer:
             "prefiltered_samples": prefiltered_samples # Pass filtered list
         }
 
+        # Select Environment Class
+        if self.env_type == "deflation":
+            env_cls = DeflationEnv
+        else:
+            env_cls = MaskedKDNEnv
+
         # Initialize training environment with action masking
-        print(f"Initializing {self.n_envs} training environments with action masking...")
+        print(f"Initializing {self.n_envs} training environments ({self.env_type}) with action masking...")
         env = make_vec_env(
-            MaskedKDNEnv,
+            env_cls,
             n_envs=self.n_envs,
             env_kwargs=env_kwargs,
             vec_env_cls=None,
-            wrapper_class=ActionMasker,
-            wrapper_kwargs={'action_mask_fn': mask_fn}
         )
 
         # Set up MaskablePPO model
@@ -175,12 +181,12 @@ class Trainer:
         else:
             print("Using GCN Feature Extractor")
 
-        # Optimized GCN/GAT config
+        # Optimized GCN/GAT config (aligned with probe-accuracy results)
         policy_kwargs = dict(
             features_extractor_class=features_extractor_class,
             features_extractor_kwargs=dict(
-                hidden_dim=8,
-                n_layers=2,
+                hidden_dim=512,
+                n_layers=4,
                 out_dim=None
             )
         )
@@ -192,8 +198,8 @@ class Trainer:
             verbose=1,
             learning_rate=3e-4,
             n_steps=2048,   
-            batch_size=2048, 
-            n_epochs=4,
+            batch_size=64, 
+            n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,

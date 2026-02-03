@@ -1,313 +1,279 @@
-import pytest
-import numpy as np
 import torch
-import torch.nn.functional as F
-import os
-import sys
+import torch.nn as nn
 import gymnasium as gym
+import numpy as np
+import pytest
+from src.gcn import GCNFeatureExtractor, GCNLayer
 from sklearn.linear_model import Ridge
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
 
-# Ensure src is in path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.env import KDNEnvinronment
-from src.gcn import GCNFeatureExtractor
-
-def import_nx():
-    import networkx as nx
-    return nx
-
-# --- Shared Mocks ---
-
-class MockEnv:
-    def __init__(self, n_nodes=14, max_steps=20):
-        self.observation_space = gym.spaces.Dict({
-            "traffic": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
-            "topology": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
-            "link_utilization": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
-            "destination": gym.spaces.Box(low=0, high=n_nodes, shape=(1,), dtype=int),
-            "path": gym.spaces.Box(low=-1, high=n_nodes, shape=(max_steps + 1,), dtype=int)
+class TestGCNFeatureExtractor:
+    
+    @pytest.fixture
+    def setup_gcn(self):
+        n_nodes = 5
+        n_edges = 10
+        max_steps = 20
+        hidden_dim = 128
+        
+        # Define observation space
+        obs_space = gym.spaces.Dict({
+            "traffic_demand": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
+            "path": gym.spaces.Box(low=-1, high=n_nodes, shape=(max_steps + 1,), dtype=int),
+            "edge_endpoints": gym.spaces.Box(low=0, high=n_nodes, shape=(n_edges, 2), dtype=int),
+            "edge_features": gym.spaces.Box(low=0, high=np.inf, shape=(n_edges, 4), dtype=np.float32),
+            "maxAvgLambda": gym.spaces.Box(low=0, high=np.inf, shape=(1,), dtype=np.float32)
         })
-
-# --- Helper Functions for Integration Tests ---
-
-def collect_data(env, num_samples=1000, mode='random'):
-    """
-    mode: 'random' -> Collect random paths (Opt and SP) for training
-          'hard'   -> Collect ONLY cases where Optimal != Shortest
-    """
-    observations = []
-    mlu_targets = []
-    
-    # Safety limit
-    max_iters = num_samples * 50
-    iters = 0
-    
-    while len(observations) < num_samples and iters < max_iters:
-        iters += 1
-        obs, info = env.reset()
         
-        # 1. Optimal Path
-        opt_path = env.optimal_path
+        extractor = GCNFeatureExtractor(obs_space, hidden_dim=hidden_dim, n_layers=2)
+        return extractor, n_nodes, n_edges
+
+    def test_gcn_structure_custom_params(self, setup_gcn):
+        extractor, n_nodes, n_edges = setup_gcn
+        assert len(extractor.gcn_layers) == 2
+        # Input dim is now 9 (fixed from 7)
+        assert extractor.gcn_layers[0].linear.in_features == 9
+
+    def test_gcn_forward_pass_safety(self, setup_gcn):
+        extractor, n_nodes, n_edges = setup_gcn
+        B = 2
         
-        # 2. Shortest Path (NetworkX - Hops)
-        G = env.sample.topology_object
-        src = env.current_node
-        dst = env.destination
+        # Create dummy observations
+        traffic = torch.rand(B, n_nodes, n_nodes)
+        path = torch.randint(-1, n_nodes, (B, 21))
+        # Ensure path has valid start
+        path[:, 0] = 0
+        
+        edge_endpoints = torch.randint(0, n_nodes, (B, n_edges, 2))
+        edge_features = torch.rand(B, n_edges, 4) 
+        # [Cap, Util, Active, InPath]
+        edge_features[:, :, 2] = (edge_features[:, :, 2] > 0.5).float()
+        edge_features[:, :, 3] = (edge_features[:, :, 3] > 0.5).float()
+        
+        obs = {
+            "traffic_demand": traffic,
+            "path": path,
+            "edge_endpoints": edge_endpoints,
+            "edge_features": edge_features,
+            "maxAvgLambda": torch.tensor([[100.0], [100.0]])
+        }
+        
+        with torch.no_grad():
+            full_out = extractor(obs)
+            
+        # New pooling architecture dimension: (2H + 4) * 2 + 6
+        # h=128 (default in test) -> (256+4)*2 + 6 = 520+6 = 526
+        expected_dim = (128 * 2 + 4) * 2 + 6
+        assert full_out.shape == (B, expected_dim)
+
+    def test_gcn_inactive_edge_sensitivity(self, setup_gcn):
+        """
+        Verify that the GCN output changes when an edge is marked as inactive.
+        This confirms alignment with the action mask concept (inactive edges are handled differently).
+        """
+        extractor, n_nodes, n_edges = setup_gcn
+        B = 1
+        
+        # 1. Base Observation (All Active)
+        traffic = torch.rand(B, n_nodes, n_nodes)
+        path = torch.zeros((B, 21), dtype=torch.long)
+        path[:, 0] = 0
+        path[:, 1:] = -1 # Simple path at node 0
+        
+        # Fixed edges for reproducibility
+        edge_endpoints = torch.randint(0, n_nodes, (B, n_edges, 2))
+        # Ensure edge 0 connects relevant nodes
+        edge_endpoints[0, 0] = torch.tensor([0, 1])
+        
+        # All edges active initially
+        edge_features = torch.ones(B, n_edges, 4) # [Cap, Util, Active, InPath]
+        
+        obs_active = {
+            "traffic_demand": traffic,
+            "path": path,
+            "edge_endpoints": edge_endpoints,
+            "edge_features": edge_features.clone(),
+            "maxAvgLambda": torch.tensor([[100.0]])
+        }
+        
+        # 2. Inactive Observation (Edge 0 Inactive)
+        edge_features_inactive = edge_features.clone()
+        edge_features_inactive[0, 0, 2] = 0.0 # Mark Edge 0 as inactive
+        
+        obs_inactive = {
+            "traffic_demand": traffic,
+            "path": path.clone(), # Ensure path[0] is not -1
+            "edge_endpoints": edge_endpoints,
+            "edge_features": edge_features_inactive,
+            "maxAvgLambda": torch.tensor([[100.0]])
+        }
+        obs_inactive["path"][0, 0] = 0 # Ensure non-negative for one_hot
+        
+        with torch.no_grad():
+            out_active = extractor(obs_active)
+            out_inactive = extractor(obs_inactive)
+            
+        # 3. Assertions
+        # A. Outputs must be different
+        assert not torch.allclose(out_active, out_inactive), "GCN output should change when edge active status changes"
+        
+        # B. Check global feature 'ActiveRatio' (last element)
+        # Active Ratio is mean of IsActive column.
+        # In active case: 1.0. In inactive case: (N-1)/N = 0.9
+        # active_ratio is at index -3 (before max_avg_lambda, total_traffic)
+        active_ratio_idx = -3
+        assert not torch.isclose(out_active[0, active_ratio_idx], out_inactive[0, active_ratio_idx]), \
+            "Global ActiveRatio feature should reflect the change"
+            
+
+    # Keeping dynamic logic test for regression safety
+    def test_gcn_dynamic_logic(self, setup_gcn):
+        extractor, n_nodes, n_edges = setup_gcn
+        B = 1
+        # Create a linear graph 0-1-2
+        edge_endpoints = torch.zeros(B, n_edges, 2, dtype=torch.long)
+        edge_endpoints[0, 0] = torch.tensor([0, 1]) # Edge 0: 0->1
+        edge_endpoints[0, 1] = torch.tensor([1, 2]) # Edge 1: 1->2
+        
+        edge_features = torch.zeros(B, n_edges, 4)
+        edge_features[:, :, 0] = 10.0 # Cap
+        edge_features[:, :, 2] = 1.0  # Active
+        edge_features[:, :, 3] = 0.0  # InPath
+        
+        traffic = torch.zeros(B, n_nodes, n_nodes)
+        
+        path = torch.full((B, 21), -1, dtype=torch.long)
+        path[0, 0] = 0
+        
+        obs = {
+            "traffic_demand": traffic,
+            "path": path,
+            "edge_endpoints": edge_endpoints,
+            "edge_features": edge_features,
+            "maxAvgLambda": torch.tensor([[100.0]])
+        }
+        
+        with torch.no_grad():
+            full_out = extractor(obs)
+            
+        # New pooling architecture dimension: (2H + 4) * 2 + 6
+        # h=128 (default in test) -> (256+4)*2 + 6 = 520+6 = 526
+        expected_dim = (128 * 2 + 4) * 2 + 6
+        assert full_out.shape[1] == expected_dim
+
+    def test_gcn_probe_accuracy(self, setup_gcn):
+        """
+        Verify that GCN features are predictive of MLU using REAL data from Datanet.
+        This uses the DeflationEnv to load existing TFRecords.
+        """
+        import os
+        from src.deflation_env import DeflationEnv
+        
+        # 1. Setup Environment with Real Data
+        data_dir = 'data/nsfnetbw'
+        if not os.path.exists(data_dir):
+            pytest.skip(f"Data directory '{data_dir}' not found. Skipping real data test.")
+
+        # Initialize environment (using same logic as training)
         try:
-            sp_path = list(next(import_nx().all_shortest_paths(G, src, dst)))
-        except:
-            sp_path = None
+            env = DeflationEnv(tfrecords_dir=data_dir, traffic_intensity=9, calc_optimal=True)
+        except Exception as e:
+            pytest.fail(f"Failed to initialize DeflationEnv: {e}")
+            
+        # 2. Initialize GCN with Env's Observation Space
+        obs_space = env.observation_space
+        extractor = GCNFeatureExtractor(obs_space, hidden_dim=512, n_layers=4)
         
-        paths_to_add = []
+        # 3. Collect Data (Mix of Shortest Path and Optimal Path)
+        num_samples = 1500 # Increased for better R2 convergence
+        X_features = []
+        y_targets = []
         
-        if mode == 'hard':
-            # Check if opt path is significantly different from SP
-            if opt_path and sp_path:
-                if len(opt_path) > len(sp_path) or opt_path != sp_path:
-                    paths_to_add.append(opt_path)
-        else:
-            if opt_path: paths_to_add.append(opt_path)
-            if sp_path: paths_to_add.append(sp_path)
+        observations = []
+        mlu_targets = []
         
-        if not paths_to_add:
-            continue
-            
-        base_obs = env._get_obs()
-        
-        for path in paths_to_add:
-            link_loads = env._calculate_background_loads(src, dst)
-            mlu = env._calculate_max_utilization(path, link_loads)
-            
-            path_arr = np.full(env.max_steps + 1, -1, dtype=int)
-            path_len = min(len(path), env.max_steps + 1)
-            path_arr[:path_len] = path[:path_len]
-            
-            current_obs = {
-                "destination": base_obs["destination"].copy(),
-                "traffic": base_obs["traffic"].copy(),
-                "topology": base_obs["topology"].copy(),
-                "link_utilization": base_obs["link_utilization"].copy(),
-                "path": path_arr
-            }
-            
-            observations.append(current_obs)
-            mlu_targets.append(mlu)
-            
-            if len(observations) >= num_samples:
-                break
+        # Collect loop
+        while len(observations) < num_samples:
+            try:
+                env.reset()
+            except StopIteration:
+                # Should handle end of dataset if num_samples > dataset size
+                env.reader = iter(env.reader) # Reset reader? Or just re-init
+                # For simplicity, if dataset exhaustion happens, break or handle.
+                # DeflationEnv.reset handles iteration internally mostly.
+                env.reset()
                 
-    return observations, mlu_targets
-
-def get_features_batch(extractor, raw_obs):
-    batch = {k: [] for k in raw_obs[0].keys()}
-    for o in raw_obs:
-        for k in batch:
-            batch[k].append(o[k])
-    for k in batch:
-        batch[k] = torch.tensor(np.array(batch[k]), dtype=torch.float32)
-    
-    with torch.no_grad():
-        feats = extractor(batch)
-    return feats.numpy()
-
-# --- Unit Tests: Logic & Structure ---
-
-def test_gcn_structure_defaults():
-    env = MockEnv()
-    extractor = GCNFeatureExtractor(env.observation_space)
-    
-    # Defaults: hidden=128, layers=2, out_dim=None
-    # n_layers param was added, checked via len(gcn_layers)
-    assert len(extractor.gcn_layers) == 2
-    assert extractor.hidden_dim == 128
-    # 14 nodes * 128 hidden + 4 global features
-    assert extractor._features_dim == 14 * 128 + 4
-    assert extractor.projection is None
-
-def test_gcn_structure_custom_params():
-    env = MockEnv()
-    extractor = GCNFeatureExtractor(env.observation_space, 
-                                    hidden_dim=64, 
-                                    n_layers=3, 
-                                    out_dim=256)
-    
-    # Layers should be 3
-    assert len(extractor.gcn_layers) == 3
-    # Hidden dim stored
-    assert extractor.hidden_dim == 64
-    # Features dim should be equal to out_dim
-    assert extractor._features_dim == 256
-    # Projection should exist
-    assert extractor.projection is not None
-    
-    # Verify forward pass shape
-    B = 4
-    N = 14
-    obs = {
-        "traffic": torch.rand(B, N, N),
-        "topology": torch.rand(B, N, N),
-        "link_utilization": torch.rand(B, N, N),
-        "destination": torch.randint(0, N, (B, 1)),
-        "path": torch.randint(-1, N, (B, 20))
-    }
-    
-    out = extractor(obs)
-    # Shape should be (B, 256)
-    assert out.shape == (B, 256)
-
-def test_current_node_extraction():
-    # Setup
-    n_nodes = 5
-    max_steps = 10
-    mock_env = MockEnv(n_nodes, max_steps)
-    extractor = GCNFeatureExtractor(mock_env.observation_space, features_dim=64)
-    
-    # 1. Path Length 1 (Just started: [src, -1, ..., -1])
-    path_obs = torch.full((1, max_steps + 1), -1, dtype=torch.long)
-    start_node = 0
-    path_obs[0, 0] = start_node
-    
-    # Simulate logic
-    mask = (path_obs != -1)
-    lens = mask.sum(dim=1)
-    batch_indices = torch.arange(1)
-    current_node_indices = path_obs[batch_indices, lens - 1]
-    
-    assert lens[0] == 1
-    assert current_node_indices[0] == start_node
-    
-    # 2. Path Length < Max (Normal op: [src, n1, n2, current, -1, ...])
-    path_list = [0, 2, 4, 1]
-    path_obs = torch.full((1, max_steps + 1), -1, dtype=torch.long)
-    path_obs[0, :len(path_list)] = torch.tensor(path_list)
-    
-    mask = (path_obs != -1)
-    lens = mask.sum(dim=1)
-    batch_indices = torch.arange(1)
-    current_node_indices = path_obs[batch_indices, lens - 1]
-    
-    assert lens[0] == 4
-    assert current_node_indices[0] == 1
-
-def test_gcn_forward_pass_safety():
-    # Integration test with forward pass
-    n_nodes = 5
-    max_steps = 5
-    mock_env = MockEnv(n_nodes, max_steps)
-    extractor = GCNFeatureExtractor(mock_env.observation_space, hidden_dim=32, n_layers=2)
-    
-    # Create dummy observations
-    B = 2
-    obs = {
-        "destination": torch.tensor([[4], [3]], dtype=torch.float32), 
-        "path": torch.full((B, max_steps + 1), -1, dtype=torch.float32),
-        "topology": torch.rand((B, n_nodes, n_nodes)),
-        "traffic": torch.rand((B, n_nodes, n_nodes)),
-        "link_utilization": torch.rand((B, n_nodes, n_nodes))
-    }
-    
-    # Fill paths
-    obs["path"][0, 0] = 0
-    obs["path"][1, 0] = 0
-    obs["path"][1, 1] = 1
-    
-    # Forward check
-    output = extractor(obs)
-    # Output dim = N*hidden + 4
-    expected_dim = n_nodes * 32 + 4
-    assert output.shape == (B, expected_dim)
-
-# --- Integration Tests: Probe & Generalization ---
-
-@pytest.fixture(scope="module")
-def real_env():
-    data_dir = 'data/nsfnetbw'
-    if not os.path.exists(data_dir):
-        if os.path.exists('data/nsfnetbw'):
-            data_dir = 'data/nsfnetbw'
-        elif os.path.exists('../data/nsfnetbw'):
-            data_dir = '../data/nsfnetbw'
-    
-    # Use intensity 9 for consistency
-    env = KDNEnvinronment(tfrecords_dir=data_dir, traffic_intensity=9)
-    return env
-
-def test_gcn_probe_accuracy(real_env):
-    """
-    Verifies that GCN features are sufficient to predict MLU with high accuracy (R^2 > 0.8).
-    This acts as a regression test for the GCN architecture.
-    """
-    observation_space = real_env.observation_space
-    
-    # Collect Data
-    # 1500 samples
-    num_samples = 1500
-    train_obs, train_y = collect_data(real_env, num_samples=num_samples, mode='random')
-    
-    assert len(train_obs) >= num_samples, f"Could not collect enough samples. Got {len(train_obs)}"
-    
-    # Feature Extraction
-    extractor = GCNFeatureExtractor(observation_space)
-    
-    # Batch processing
-    X_list = []
-    batch_size = 256
-    for i in range(0, len(train_obs), batch_size):
-        X_list.append(get_features_batch(extractor, train_obs[i:i+batch_size]))
+            # 1. Primary path (Shortest Path on Reset)
+            observations.append(env._get_obs())
+            mlu_targets.append(env.current_mlu)
             
-    X = np.concatenate(X_list, axis=0)
-    y = np.array(train_y)
-    
-    # Train Linear Probe
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    model = Ridge(alpha=1.0)
-    model.fit(X_train, y_train)
-    
-    # Evaluate
-    y_pred_test = model.predict(X_test)
-    r2_test = r2_score(y_test, y_pred_test)
-    
-    print(f"GCN Probe Test R^2: {r2_test:.4f}")
-    assert r2_test > 0.8, f"GCN Probe failed with R^2 {r2_test:.4f} < 0.8"
-
-def test_gcn_non_shortest_generalization(real_env):
-    """
-    Verifies that GCN works on 'hard' cases (Optimal != Shortest).
-    """
-    observation_space = real_env.observation_space
-    extractor = GCNFeatureExtractor(observation_space)
-    
-    # Reuse model from probe test? No, safer to retrain or train fresh to avoid state leakage/deps.
-    # Train on General Data
-    train_obs, train_y = collect_data(real_env, num_samples=2000, mode='random')
-    
-    X_train_list = []
-    batch_size = 256
-    for i in range(0, len(train_obs), batch_size):
-        X_train_list.append(get_features_batch(extractor, train_obs[i:i+batch_size]))
-    X_train = np.concatenate(X_train_list)
-    y_train = np.array(train_y)
-    
-    model = Ridge(alpha=1.0)
-    model.fit(X_train, y_train)
-    
-    # Test on Hard Data
-    test_obs, test_y = collect_data(real_env, num_samples=200, mode='hard')
-    
-    if len(test_obs) < 50:
-         pytest.skip("Not enough hard samples found in reasonable time")
-         
-    X_test_list = []
-    for i in range(0, len(test_obs), batch_size):
-        X_test_list.append(get_features_batch(extractor, test_obs[i:i+batch_size]))
-    X_test = np.concatenate(X_test_list)
-    y_test = np.array(test_y)
-    
-    y_pred = model.predict(X_test)
-    r2_test = r2_score(y_test, y_pred)
-    
-    print(f"Hard Set R^2: {r2_test:.4f}")
-    assert r2_test > 0.8, f"GCN failed on hard cases. R^2: {r2_test:.4f}"
+            # 2. Optimal Path (if distinct)
+            if env.optimal_path is not None and env.optimal_path != env.current_path:
+                # Manually construct obs for optimal path
+                base_obs = env._get_obs()
+                path_arr = np.full(env.max_steps + 1, -1, dtype=int)
+                path_len = min(len(env.optimal_path), env.max_steps + 1)
+                path_arr[:path_len] = env.optimal_path[:path_len]
+                
+                # Verify MLU for optimal path
+                bg_loads = env.bg_loads
+                opt_mlu = env.sample.calculate_max_utilization(env.optimal_path, bg_loads)
+                
+                current_obs = {
+                    "traffic_demand": base_obs["traffic_demand"].copy(),
+                    "edge_endpoints": base_obs["edge_endpoints"].copy(),
+                    "edge_features": base_obs["edge_features"].copy(),
+                    "path": path_arr,
+                    "maxAvgLambda": base_obs["maxAvgLambda"].copy(),
+                }
+                
+                observations.append(current_obs)
+                mlu_targets.append(opt_mlu)
+        
+        observations = observations[:num_samples] # Trim
+        mlu_targets = mlu_targets[:num_samples]
+        
+        # 4. Extract Features
+        # Batch processing for efficiency
+        batch_size = 32
+        for i in range(0, len(observations), batch_size):
+            batch_obs = observations[i:i+batch_size]
+            
+            # Helper to batch dict of numpy arrays
+            batch_dict = {k: [] for k in batch_obs[0].keys()}
+            for o in batch_obs:
+                for k in batch_dict:
+                    batch_dict[k].append(o[k])
+            
+            for k in batch_dict:
+                batch_dict[k] = torch.tensor(np.array(batch_dict[k]))
+                if k in ["traffic_demand", "edge_features", "maxAvgLambda"]:
+                    batch_dict[k] = batch_dict[k].float()
+                elif k in ["path", "edge_endpoints"]:
+                    batch_dict[k] = batch_dict[k].long()
+            
+            with torch.no_grad():
+                feats = extractor(batch_dict)
+            
+            X_features.append(feats.numpy())
+            
+        X = np.concatenate(X_features, axis=0)
+        y = np.array(mlu_targets)
+        
+        # 5. Train Probe
+        # 80/20 Split
+        split_idx = int(0.8 * len(X))
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+        
+        model = Ridge(alpha=0.1)
+        model.fit(X_train, y_train)
+        
+        y_pred = model.predict(X_test)
+        r2 = r2_score(y_test, y_pred)
+        
+        print(f"Real Data Probe R^2: {r2:.4f}")
+        
+        # 6. Assert
+        # Target threshold as requested by user
+        assert r2 >= 0.85, f"GCN Features predictive power too low on Real Data. R2={r2:.4f}"

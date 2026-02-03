@@ -4,11 +4,12 @@ import numpy as np
 import torch
 from stable_baselines3 import PPO
 from sb3_contrib import MaskablePPO
-from tqdm.rich import tqdm
+from tqdm import tqdm
 import networkx as nx
 
 from src.env import KDNEnvinronment
 from src.masked_env import MaskedKDNEnv
+from src.deflation_env import DeflationEnv
 from src.datanet import Datanet
 from src.gcn import GCNFeatureExtractor
 from joblib import Parallel, delayed
@@ -17,13 +18,14 @@ import multiprocessing
 class BenchmarkRunner:
     def __init__(self, tfrecords_dir, traffic_intensity, num_samples=10, 
                  ppo_path="agents/ppo_model", maskppo_path="agents/maskppo_model", 
-                 agent_type="MaskPPO", model_instance=None):
+                 agent_type="MaskPPO", env_type="kdn", model_instance=None):
         self.tfrecords_dir = tfrecords_dir
         self.traffic_intensity = traffic_intensity
         self.num_samples = num_samples
         self.ppo_path = ppo_path
         self.maskppo_path = maskppo_path
         self.agent_type = agent_type
+        self.env_type = env_type
         self.model_instance = model_instance
         
         # Determine device
@@ -68,19 +70,27 @@ class BenchmarkRunner:
             model_instance.save(temp_model_path)
             agent_path = temp_model_path
 
-        def eval_single_sample(sample, agent_path, agent_label, traffic_intensity, tfrecords_dir):
+        def eval_single_sample(sample, agent_path, agent_label, traffic_intensity, tfrecords_dir, env_type="kdn"):
             # Create a local environment for this worker
             if agent_label == 'MaskPPO':
-                local_env = MaskedKDNEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                if env_type == "deflation":
+                    local_env = DeflationEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity, calc_optimal=True)
+                else:
+                    local_env = MaskedKDNEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                    
                 custom_objects = {"features_extractor_class": GCNFeatureExtractor}
                 local_model = MaskablePPO.load(agent_path, device="cpu", custom_objects=custom_objects)
                 use_masking = True
             else:
-                local_env = KDNEnvinronment(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                # PPO case (usually unmasked)
+                if env_type == "deflation":
+                     local_env = DeflationEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity, calc_optimal=True)
+                else:
+                    local_env = KDNEnvinronment(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                 local_model = PPO.load(agent_path, device="cpu")
                 use_masking = False
             
-            local_env.sample = sample
+            # local_env.sample = sample # Handled in loop or reset now
             n = sample.get_network_size()
             
             sample_mlus = []
@@ -93,17 +103,23 @@ class BenchmarkRunner:
                     if src == dst: continue
                     
                     sample_episodes += 1
-                    local_env.current_node = src
-                    local_env.destination = dst
-                    local_env.path = [src]
-                    local_env.current_step = 0
-                    local_env.optimal_path = None
-                    
-                    obs = local_env._get_obs()
+                    if env_type == "deflation":
+                        # Use proper reset to initialize DeflationEnv state (topology copies, MLU calcs, etc.)
+                        obs, _ = local_env.reset(options={"sample": sample, "src": src, "dst": dst})
+                    else:
+                        # Manual injection for KDNEnvinronment (Legacy)
+                        local_env.sample = sample
+                        local_env.current_node = src
+                        local_env.destination = dst
+                        local_env.path = [src]
+                        local_env.current_step = 0
+                        local_env.optimal_path = None
+                        obs = local_env._get_obs()
                     done = truncated = False
                     steps = 0
                     max_steps = 50
-                    episode_mlu = 1.0
+                    episode_mlu = 1.0 # Default High
+                    episode_success = False
                     
                     while not done and not truncated and steps < max_steps:
                         if use_masking:
@@ -115,18 +131,32 @@ class BenchmarkRunner:
                         obs, reward, done, truncated, info = local_env.step(action)
                         steps += 1
                         
-                        if done:
+                        if done and env_type != "deflation":
                             if 'mlu' in info: episode_mlu = info['mlu']
-                            if info.get('is_success', False): sample_success_count += 1
+                            if info.get('is_success', False): episode_success = True
+                            
+                    if env_type == "deflation":
+                         # DeflationEnv: Use Best-So-Far metrics found during episode
+                         episode_mlu = local_env.min_mlu_so_far
+                         p_len = len(local_env.best_path_so_far)
+                         
+                         if local_env.original_mlu - episode_mlu > 1e-4:
+                             episode_success = True
+                    else:
+                         # KDNEnv: Use final metrics
+                         p_len = len(local_env.path)
+                    
+                    if episode_success:
+                        sample_success_count += 1
                     
                     sample_mlus.append(episode_mlu)
-                    sample_path_lengths.append(len(local_env.path))
+                    sample_path_lengths.append(p_len)
             
             return sample_mlus, sample_path_lengths, sample_success_count, sample_episodes
 
         # Run in parallel
         results = Parallel(n_jobs=n_jobs)(
-            delayed(eval_single_sample)(s, agent_path, agent_label, self.traffic_intensity, self.tfrecords_dir) 
+            delayed(eval_single_sample)(s, agent_path, agent_label, self.traffic_intensity, self.tfrecords_dir, self.env_type) 
             for s in tqdm(samples, desc=f"Parallel Eval {agent_label}")
         )
         
@@ -308,8 +338,11 @@ class BenchmarkRunner:
                 print(f"Failed to evaluate PPO: {e}")
                 
         if self.agent_type in ['MaskPPO', 'all']:
-            print(f"\nInitializing environment for MaskPPO...")
-            env = MaskedKDNEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
+            print(f"\nInitializing environment for MaskPPO ({self.env_type})...")
+            if self.env_type == "deflation":
+                env = DeflationEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity, calc_optimal=True)
+            else:
+                env = MaskedKDNEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
             try:
                 model_inst = self.model_instance if self.agent_type == 'MaskPPO' else None
                 res = self.evaluate_agent_mlu(self.maskppo_path, env, samples, 'MaskPPO', model_instance=model_inst)
