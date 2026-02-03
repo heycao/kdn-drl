@@ -191,7 +191,7 @@ class DeflationEnv(gym.Env):
         # Best-So-Far Strategy: Only reward if we beat the absolute best found this episode
         if current_mlu < self.min_mlu_so_far:
             improvement = self.min_mlu_so_far - current_mlu
-            reward = improvement * 100
+            reward = (improvement * 100) ** 2
             self.min_mlu_so_far = current_mlu
             self.best_path_so_far = list(new_path)
         else:

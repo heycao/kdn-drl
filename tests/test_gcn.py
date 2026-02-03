@@ -61,9 +61,10 @@ class TestGCNFeatureExtractor:
         with torch.no_grad():
             full_out = extractor(obs)
             
-        # New pooling architecture dimension: (2H + 4) * 2 + 6
-        # h=128 (default in test) -> (256+4)*2 + 6 = 520+6 = 526
-        expected_dim = (128 * 2 + 4) * 2 + 6
+        # New Flattened architecture dimension: K * (2H + 4) + 6
+        # h=128, K=10, 6 global features
+        # (256+4)*10 + 6 = 2600 + 6 = 2606
+        expected_dim = n_edges * (128 * 2 + 4) + 6
         assert full_out.shape == (B, expected_dim)
 
     def test_gcn_inactive_edge_sensitivity(self, setup_gcn):
@@ -156,9 +157,10 @@ class TestGCNFeatureExtractor:
         with torch.no_grad():
             full_out = extractor(obs)
             
-        # New pooling architecture dimension: (2H + 4) * 2 + 6
-        # h=128 (default in test) -> (256+4)*2 + 6 = 520+6 = 526
-        expected_dim = (128 * 2 + 4) * 2 + 6
+        # New Flattened architecture dimension: K * (2H + 4) + 6
+        # h=128, K=3 (defined in this test), 6 global features
+        # (256+4)*3 + 6 = 780 + 6 = 786
+        expected_dim = n_edges * (128 * 2 + 4) + 6
         assert full_out.shape[1] == expected_dim
 
     def test_gcn_probe_accuracy(self, setup_gcn):

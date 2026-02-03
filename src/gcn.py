@@ -52,9 +52,9 @@ class GCNFeatureExtractor(BaseFeaturesExtractor):
         self.edge_embedding_dim = hidden_dim * 2 + 4
         
         # Final Readout Dim:
-        # MaxPool(EdgeEmbed) + MeanPool(EdgeEmbed) + GlobalFeatures(6)
+        # Flatten(EdgeEmbed) + GlobalFeatures(6)
         # Global: BgMax, MeanUtil, MaxCap, ActiveRatio, MaxAvgLambda, TotalTraffic
-        self.post_concat_dim = self.edge_embedding_dim * 2 + 6
+        self.post_concat_dim = self.edge_embedding_dim * k + 6
         
         super_features_dim = out_dim if out_dim is not None else self.post_concat_dim
         
@@ -234,23 +234,11 @@ class GCNFeatureExtractor(BaseFeaturesExtractor):
         edge_embeddings = torch.cat([h_u, h_v, edge_features_scaled], dim=2) # (B, K, 2H+4)
         
         # 6. Global Features and Readout
-        # Readout: Max and Mean pooling over edges
-        # We mask out inactive edges for pooling? 
-        # For Max Pooling, inactive edges (embedding=0 usually) won't hurt if we have some positive features.
-        # For Mean Pooling, we should definitely mask.
-        mask_k = edge_features[:, :, 2].unsqueeze(2) # (B, K, 1) IsActive
+        # Readout: Flatten edge embeddings to preserve spatial information
+        e_flat = edge_embeddings.view(edge_embeddings.size(0), -1) # (B, K * (2H+4))
         
-        # Global Max Pooling (Bottleneck identification)
-        # Use a large negative number for masked values to ensure they don't win Max
-        edge_embeddings_masked_max = edge_embeddings + (1.0 - mask_k) * -1e9
-        e_max = edge_embeddings_masked_max.max(dim=1)[0] # (B, 2H+3)
-        
-        # Global Mean Pooling (Average load context)
-        e_sum = (edge_embeddings * mask_k).sum(dim=1)
-        e_count = mask_k.sum(dim=1).clamp(min=1.0)
-        e_mean = e_sum / e_count # (B, 2H+3)
-        
-        # Other Global features
+        # Other Global features (Keep these as they provide good context)
+        # Note: We still calculate these for global context summary
         global_bg_max = edge_features[:, :, 1].max(dim=1)[0].unsqueeze(1) # (B, 1)
         global_mean_util = edge_features[:, :, 1].mean(dim=1).unsqueeze(1)
         global_max_cap = torch.log1p(edge_features[:, :, 0].max(dim=1)[0]).unsqueeze(1)
@@ -260,7 +248,7 @@ class GCNFeatureExtractor(BaseFeaturesExtractor):
         total_traffic = torch.log1p(observations["traffic_demand"].sum(dim=(1, 2))).unsqueeze(1) # (B, 1)
         
         # Final feature vector
-        out = torch.cat([e_max, e_mean, global_bg_max, global_mean_util, global_max_cap, active_ratio, max_avg_lambda, total_traffic], dim=1)
+        out = torch.cat([e_flat, global_bg_max, global_mean_util, global_max_cap, active_ratio, max_avg_lambda, total_traffic], dim=1)
         
         if self.projection is not None:
             out = self.projection(out)
