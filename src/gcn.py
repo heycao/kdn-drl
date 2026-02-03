@@ -8,6 +8,7 @@ class GCNLayer(nn.Module):
     def __init__(self, in_features, out_features):
         super(GCNLayer, self).__init__()
         self.linear = nn.Linear(in_features, out_features)
+        self.layer_norm = nn.LayerNorm(out_features)
 
     def forward(self, x, adj):
         """
@@ -18,6 +19,8 @@ class GCNLayer(nn.Module):
         out = torch.bmm(adj, x)
         # (A * X) * W
         out = self.linear(out)
+        # LayerNorm
+        out = self.layer_norm(out)
         return out
 
 class GCNFeatureExtractor(BaseFeaturesExtractor):
