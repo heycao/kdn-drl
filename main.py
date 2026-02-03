@@ -36,7 +36,7 @@ def main():
     parser.add_argument("--device", type=str, default=None, help="Device (cpu, cuda, mps). Auto-detect if None.")
 
     # --- Training Arguments ---
-    parser.add_argument("--total_timesteps", type=int, default=100_000, help="Total training timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=1_000_000, help="Total training timesteps")
     parser.add_argument("--n_envs", type=int, default=8, help="Number of parallel environments")
     parser.add_argument("--log_interval", type=int, default=1, help="Log interval")
     parser.add_argument("--model_path", type=str, default="final_model", help="Filename for saved model")
@@ -44,7 +44,9 @@ def main():
     
     # --- Benchmark Arguments ---
     parser.add_argument("--run_benchmark", type=str2bool, default=True, help="Run benchmark after training?")
+
     parser.add_argument("--num_samples", type=int, default=100, help="Number of benchmark samples")
+    parser.add_argument("--env_type", type=str, default="deflation", choices=["kdn", "deflation"], help="Environment type: 'kdn' or 'deflation'")
 
     args = parser.parse_args()
 
@@ -61,6 +63,7 @@ def main():
         dataset_name=args.dataset_name,
         model_type=args.model_type,
         gnn_type=args.gnn_type,
+        env_type=args.env_type,
         device=args.device
     )
     
@@ -107,6 +110,7 @@ def main():
             ppo_path=ppo_path,
             maskppo_path=maskppo_path,
             agent_type=agent_type_arg,
+            env_type=args.env_type,
             model_instance=trainer.model
         )
         

@@ -182,7 +182,7 @@ class TestGCNFeatureExtractor:
             
         # 2. Initialize GCN with Env's Observation Space
         obs_space = env.observation_space
-        extractor = GCNFeatureExtractor(obs_space, hidden_dim=512, n_layers=4)
+        extractor = GCNFeatureExtractor(obs_space, hidden_dim=64, n_layers=2)
         
         # 3. Collect Data (Mix of Shortest Path and Optimal Path)
         num_samples = 1500 # Increased for better R2 convergence

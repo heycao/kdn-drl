@@ -39,8 +39,8 @@ class GCNFeatureExtractor(BaseFeaturesExtractor):
     3. Global Features:
        - Extract path statistics from the Edge List directly.
     """
-    def __init__(self, observation_space: gym.spaces.Dict, features_dim: int = 512, 
-                 hidden_dim: int = 512, n_layers: int = 4, out_dim: int = None):
+    def __init__(self, observation_space: gym.spaces.Dict, features_dim: int = 64, 
+                 hidden_dim: int = 64, n_layers: int = 2, out_dim: int = None):
         
         # Determine K (Simulating Action Space Size) and N
         # We assume K is fixed based on the observation space definition

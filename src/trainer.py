@@ -181,12 +181,12 @@ class Trainer:
         else:
             print("Using GCN Feature Extractor")
 
-        # Optimized GCN/GAT config (aligned with probe-accuracy results)
+        # Optimized GCN/GAT config (Small Model sufficient due to correct scaling)
         policy_kwargs = dict(
             features_extractor_class=features_extractor_class,
             features_extractor_kwargs=dict(
-                hidden_dim=512,
-                n_layers=4,
+                hidden_dim=64,
+                n_layers=2,
                 out_dim=None
             )
         )
@@ -197,10 +197,10 @@ class Trainer:
             policy_kwargs=policy_kwargs,
             verbose=1,
             learning_rate=3e-4,
-            n_steps=2048,   
-            batch_size=64, 
+            n_steps=512,   
+            batch_size=128, 
             n_epochs=10,
-            gamma=0.99,
+            gamma=0.9,
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=0.01,
