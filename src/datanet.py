@@ -18,7 +18,7 @@
 
 # -*- coding: utf-8 -*-
 
-import os, tarfile, numpy, math, networkx, queue, random, traceback, re
+import os, tarfile, numpy, math, networkx, queue, random, traceback, re, heapq
 from enum import IntEnum
 
 
@@ -547,39 +547,112 @@ class Sample:
 
     def search_optimal_path(self, src, dst, bg_loads, max_steps=100):
         """
-        Brute-force search for the path that minimizes MLU.
-        Returns the list of nodes representing the optimal path.
+        Efficiently finds the path that minimizes MLU (Bottleneck Capacity) 
+        and then minimizes hops, using a Bottleneck Dijkstra approach.
+        
+        Complexity: O(E log V) or O(E + V log V) equivalent.
+        Returns: list of nodes representing the optimal path.
         """
         G = self.topology_object
-        best_path = None
-        min_mlu = float('inf')
-        min_hops = float('inf')
         
-        # Limit cutoff to reasonable depth to prevent explosion in large graphs
-        # For NSFNet (14 nodes), max diameter is small, but max_steps serves as safety.
-        # simple_paths can be exponential, but for small graphs it's okay.
-        try:
-            for path in networkx.all_simple_paths(G, source=src, target=dst, cutoff=max_steps):
-                mlu = self.calculate_max_utilization(path, bg_loads)
-                hops = len(path)
+        # 1. Pre-calculate potential utilization for every edge if the flow were added.
+        # Cost(u,v) = (bg_load + flow_bw) / capacity
+        
+        # We need the flow bandwidth for the src->dst flow
+        traffic = self.traffic_matrix[src, dst]
+        flow_bw = traffic.get('AggInfo', {}).get('AvgBw', 0.0)
+        if 'Flows' in traffic and '0' in traffic['Flows']:
+            flow_bw = traffic['Flows']['0']['AvgBw']
+            
+        edge_costs = {}
+        max_bg_util = 0.0
+        
+        for u, v, data in G.edges(data=True):
+            capacity = float(data['bandwidth'])
+            
+            current_load = bg_loads.get((u, v), 0.0)
+            
+            if capacity > 0:
+                # Cost if we add flow
+                util = (current_load + flow_bw) / capacity
+                # Background util
+                bg_util = current_load / capacity
+                if bg_util > max_bg_util:
+                    max_bg_util = bg_util
+            else:
+                util = float('inf')
+            
+            edge_costs[(u, v)] = util
+            
+        # 2. Bottleneck Dijkstra to find Minimum Bottleneck Utilization (MinMinMax)
+        # We want to find a path P such that max(edge_costs[e]) for e in P is minimized.
+        # dist[v] stores the minimal bottleneck capacity to reach v.
+        
+        pq = [(0.0, src)] # (max_util_so_far, node)
+        min_bottleneck = {node: float('inf') for node in G.nodes()}
+        min_bottleneck[src] = 0.0
+        
+        # We don't need to reconstruct the path here, just find the optimal MLU value.
+        path_bottleneck = float('inf')
+        
+        while pq:
+            d, u = heapq.heappop(pq)
+            
+            if d > min_bottleneck[u]:
+                continue
+            
+            if u == dst:
+                path_bottleneck = d
+                break # Found the min-max path
+            
+            for v in G[u]:
+                # Cost to traverse edge (u,v) is cost of edge itself
+                cost_uv = edge_costs.get((u, v), float('inf'))
                 
-                # Minimizing MLU primarily, Hops secondarily
-                if mlu < min_mlu:
-                    min_mlu = mlu
-                    min_hops = hops
-                    best_path = path
-                elif mlu == min_mlu:
-                    if hops < min_hops:
-                        min_hops = hops
-                        best_path = path
-        except Exception:
-            # Fallback to shortest path if something goes wrong
-            try:
-                best_path = networkx.shortest_path(G, src, dst, weight='weight')
-            except networkx.NetworkXNoPath:
-                best_path = None
+                # The bottleneck of path to v via u is max(bottleneck_to_u, cost_uv)
+                new_bottleneck = max(d, cost_uv)
                 
-        return best_path
+                if new_bottleneck < min_bottleneck[v]:
+                    min_bottleneck[v] = new_bottleneck
+                    heapq.heappush(pq, (new_bottleneck, v))
+                    
+        if path_bottleneck == float('inf'):
+            return None # No path?
+            
+        # The Global MLU is max(Path_Bottleneck, Background_Max_MLU)
+        # We want the shortest path that satisfies Global MLU <= derived_optimal_global_mlu
+        # Actually any path with Bottleneck <= max(Path_Bottleneck, Background_Max_MLU) 
+        # will yield the same Global MLU (which is the minimal possible).
+        
+        target_mlu = max(path_bottleneck, max_bg_util)
+            
+        # 3. BFS to find Shortest Path (Hops) in the "Feasible Subgraph"
+        # The feasible subgraph contains only edges where edge_cost <= target_mlu
+        
+        epsilon = 1e-9
+        
+        # BFS Queue: (node, path_list)
+        queue_bfs = queue.Queue()
+        queue_bfs.put((src, [src]))
+        visited = {src}
+        
+        while not queue_bfs.empty():
+            u, path = queue_bfs.get()
+            
+            if u == dst:
+                return path # First path found in BFS is shortest in hops
+            
+            for v in G[u]:
+                cost_uv = edge_costs.get((u, v), float('inf'))
+                
+                # Check if edge is valid for our optimal MLU
+                if cost_uv <= target_mlu + epsilon:
+                    if v not in visited:
+                        visited.add(v)
+                        queue_bfs.put((v, path + [v]))
+                        
+        return None # Should typically not happen if Dijkstra found a path
+
 
 class Datanet:
     """

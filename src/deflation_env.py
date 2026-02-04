@@ -12,7 +12,7 @@ class DeflationEnv(gym.Env):
     Action Space: Discrete(num_edges) - Remove edge at index.
     Observation Space: Same as KDNEnvinronment, reflecting the modified topology.
     """
-    def __init__(self, tfrecords_dir=None, traffic_intensity=9, max_steps=5, prefiltered_samples=None, calc_optimal=False):
+    def __init__(self, tfrecords_dir=None, traffic_intensity=15, max_steps=20, prefiltered_samples=None):
         super().__init__()
         
         if not tfrecords_dir:
@@ -20,7 +20,6 @@ class DeflationEnv(gym.Env):
             
         self.max_steps = max_steps
         self.prefiltered_samples = prefiltered_samples
-        self.calc_optimal = calc_optimal
         
         self.reader = Datanet(tfrecords_dir, intensity_values=[traffic_intensity])
         self.iterator = iter(self.reader)
@@ -64,22 +63,22 @@ class DeflationEnv(gym.Env):
         
         # Checking for options (used in Benchmarking to force specific sample/src/dst)
         if options and "sample" in options:
-             self.sample = options["sample"]
-             if "src" in options and "dst" in options:
-                 src = options["src"]
-                 dst = options["dst"]
-             else:
-                 # If sample provided but no src/dst, pick random? 
-                 # Or assume sample implies context? For now conform to existing logic if missing.
-                 n = self.sample.get_network_size()
-                 flat_idx = self.np_random.integers(0, n * (n - 1))
-                 src = flat_idx // (n - 1)
-                 dst_offset = flat_idx % (n - 1)
-                 dst = dst_offset if dst_offset < src else dst_offset + 1
+            self.sample = options["sample"]
+            if "src" in options and "dst" in options:
+                src = options["src"]
+                dst = options["dst"]
+            else:
+                # If sample provided but no src/dst, pick random? 
+                # Or assume sample implies context? For now conform to existing logic if missing.
+                n = self.sample.get_network_size()
+                flat_idx = self.np_random.integers(0, n * (n - 1))
+                src = flat_idx // (n - 1)
+                dst_offset = flat_idx % (n - 1)
+                dst = dst_offset if dst_offset < src else dst_offset + 1
                  
         elif self.prefiltered_samples and len(self.prefiltered_samples) > 0:
-             idx = self.np_random.integers(0, len(self.prefiltered_samples))
-             self.sample, src, dst = self.prefiltered_samples[idx]
+            idx = self.np_random.integers(0, len(self.prefiltered_samples))
+            self.sample, src, dst = self.prefiltered_samples[idx]
         else:
             while True:
                 try:
@@ -113,16 +112,16 @@ class DeflationEnv(gym.Env):
         self.bg_loads = self.sample.calculate_background_loads(src, dst)
         self.current_mlu = self.sample.calculate_max_utilization(self.current_path, self.bg_loads)
         self.original_mlu = self.current_mlu
-        self.original_mlu = self.current_mlu
         self.min_mlu_so_far = self.current_mlu
         self.best_path_so_far = list(self.current_path)
         
         # Calculate Optimal Path for this request (Brute-force search)
         # Used for "is_optimal" metric
-        if self.calc_optimal:
-            self.optimal_path = self.sample.search_optimal_path(src, dst, self.bg_loads, max_steps=100)
+        optimal_path = self.sample.search_optimal_path(src, dst, self.bg_loads, max_steps=100)
+        if optimal_path:
+            self.optimal_mlu = self.sample.calculate_max_utilization(optimal_path, self.bg_loads)
         else:
-            self.optimal_path = None
+            self.optimal_mlu = None
         
         return self._get_obs(), {}
 
@@ -131,6 +130,22 @@ class DeflationEnv(gym.Env):
         terminated = False
         info = {}
         
+        # 0. Check if we are already optimal (e.g. from reset)
+        if self.optimal_mlu is not None and self.current_mlu <= self.optimal_mlu + 1e-5:
+             # Already optimal
+             peak_loss_rate = 0.0
+             if self.current_mlu > 1.0:
+                 peak_loss_rate = 1.0 - (1.0 / self.current_mlu)
+                 
+             return self._get_obs(), 0.0, True, False, {
+                 "reached_optimal_mlu": True, 
+                 "is_success": True, 
+                 "is_optimal": True,
+                 "mlu": self.current_mlu,
+                 "gap_score": 100.0,
+                 "peak_loss_rate": peak_loss_rate
+             }
+
         self.current_step += 1
         if self.current_step >= self.max_steps:
             truncated = True
@@ -217,11 +232,45 @@ class DeflationEnv(gym.Env):
         info["improvement"] = improvement_val
         info["is_success"] = (improvement_val > 1e-4)
         
-        # Check if we found the optimal path
-        info["is_optimal"] = (self.current_path == self.optimal_path) if self.optimal_path else False
+        # Calculate Gap Score
+        # Gap Score = (Agent Gain / Max Possible Gain) * 100
+        # Agent Gain = Original MLU - Current MLU
+        # Max Possible Gain = Original MLU - Optimal MLU
         
-        # Check if we have reached a dead end (no more valid actions)
+        gap_score = 0.0
+        if self.optimal_mlu is not None:
+            max_gain = self.original_mlu - self.optimal_mlu
+            agent_gain = improvement_val
+            
+            if max_gain > 1e-9:
+                gap_score = (agent_gain / max_gain) * 100.0
+            else:
+                # If potential gain is effectively 0, we are already optimal originally.
+                # If agent didn't make it worse (gain >= 0), score 100.
+                if agent_gain >= -1e-9:
+                    gap_score = 100.0
+                else:
+                    gap_score = 0.0 # Or negative? Stick to 0 for simplicity or let it slide.
+        
+        info["gap_score"] = gap_score
+        
+        # Calculate Peak Loss Rate
+        # Derived from MLU: if MLU > 1.0, Loss Rate = 1 - 1/MLU
+        peak_loss_rate = 0.0
+        if current_mlu > 1.0:
+            peak_loss_rate = 1.0 - (1.0 / current_mlu)
+        info["peak_loss_rate"] = peak_loss_rate
+
         # This prevents the agent from being forced to choose an invalid action next step
+        
+        # Check if we found the optimal path (Approximate using MLU)
+        if self.optimal_mlu is not None:
+             info["is_optimal"] = (self.current_mlu <= self.optimal_mlu + 1e-5)
+        else:
+             info["is_optimal"] = False
+        
+        # Terminate if optimal MLU is reached
+        # Moved to top of step
         masks = self.action_masks()
         if not np.any(masks):
             terminated = True

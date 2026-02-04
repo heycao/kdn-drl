@@ -36,8 +36,8 @@ def main():
     parser.add_argument("--device", type=str, default=None, help="Device (cpu, cuda, mps). Auto-detect if None.")
 
     # --- Training Arguments ---
-    parser.add_argument("--total_timesteps", type=int, default=1_000_000, help="Total training timesteps")
-    parser.add_argument("--n_envs", type=int, default=8, help="Number of parallel environments")
+    parser.add_argument("--total_timesteps", type=int, default=100_000, help="Total training timesteps")
+    parser.add_argument("--n_envs", type=int, default=1, help="Number of parallel environments")
     parser.add_argument("--log_interval", type=int, default=1, help="Log interval")
     parser.add_argument("--model_path", type=str, default="final_model", help="Filename for saved model")
     parser.add_argument("--data_filter", type=str, default="all", choices=["all", "sp", "optimal"], help="Data filter strategy")

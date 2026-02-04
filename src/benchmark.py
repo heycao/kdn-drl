@@ -163,6 +163,7 @@ class BenchmarkRunner:
         # Aggregate results
         mlus = []
         path_lengths = []
+        loss_rates = []
         success_count = 0
         total_episodes = 0
         
@@ -171,6 +172,10 @@ class BenchmarkRunner:
             path_lengths.extend(s_paths)
             success_count += s_success
             total_episodes += s_episodes
+            
+            for m in s_mlus:
+                loss = max(0.0, 1.0 - 1.0/m) if m > 0 else 0.0
+                loss_rates.append(loss)
             
         if temp_model_path and os.path.exists(temp_model_path + ".zip"):
             os.remove(temp_model_path + ".zip")
@@ -181,14 +186,16 @@ class BenchmarkRunner:
             'mlu_median': np.median(mlus),
             'mlu_min': np.min(mlus),
             'mlu_max': np.max(mlus),
+            'loss_mean': np.mean(loss_rates),
+            'loss_max': np.max(loss_rates),
             'path_length_mean': np.mean(path_lengths),
             'success_rate': success_count / total_episodes if total_episodes > 0 else 0.0,
             'num_episodes': total_episodes
         }
 
-    def evaluate_baseline_sp(self, env, samples):
-        """Evaluate baseline shortest path routing MLU (Parallelized)."""
-        print("\nEvaluating baseline (Shortest Path) routing using parallel workers...")
+    def evaluate_baselines(self, env, samples):
+        """Evaluate baseline SP and Oracle (Optimal) MLU (Parallelized)."""
+        print("\nEvaluating Baselines (Shortest Path & Oracle) using parallel workers...")
         
         n_jobs = min(multiprocessing.cpu_count(), len(samples), 8)
 
@@ -198,8 +205,8 @@ class BenchmarkRunner:
             G = sample.topology_object
             n = sample.get_network_size()
             
-            sample_mlus = []
-            sample_path_lengths = []
+            sample_sp_mlus = []
+            sample_opt_mlus = []
             sample_episodes = 0
             
             for src in range(n):
@@ -207,112 +214,159 @@ class BenchmarkRunner:
                     if src == dst: continue
                     
                     sample_episodes += 1
+                    bg_loads = sample.calculate_background_loads(src, dst)
+                    
+                    # 1. Shortest Path (Baseline)
                     try:
-                        path = nx.shortest_path(G, source=src, target=dst, weight='weight')
-                        bg_loads = sample.calculate_background_loads(src, dst)
-                        mlu = sample.calculate_max_utilization(path, bg_loads)
-                        sample_mlus.append(mlu)
-                        sample_path_lengths.append(len(path))
+                        sp_path = nx.shortest_path(G, source=src, target=dst, weight='weight')
+                        sp_mlu = sample.calculate_max_utilization(sp_path, bg_loads)
                     except nx.NetworkXNoPath:
-                        sample_path_lengths.append(0)
-                        sample_mlus.append(2.0)
+                        sp_mlu = 2.0 # Penalty
+                    
+                    # 2. Optimal Path (Oracle)
+                    opt_path = sample.search_optimal_path(src, dst, bg_loads, max_steps=100)
+                    if opt_path:
+                        opt_mlu = sample.calculate_max_utilization(opt_path, bg_loads)
+                    else:
+                        opt_mlu = sp_mlu # Fallback
+                        
+                    sample_sp_mlus.append(sp_mlu)
+                    sample_opt_mlus.append(opt_mlu)
             
-            return sample_mlus, sample_path_lengths, sample_episodes
+            return sample_sp_mlus, sample_opt_mlus, sample_episodes
 
         results = Parallel(n_jobs=n_jobs)(
             delayed(eval_single_baseline)(s, self.traffic_intensity, self.tfrecords_dir) 
-            for s in tqdm(samples, desc="Parallel Eval SP Baseline")
+            for s in tqdm(samples, desc="Parallel Eval Baselines")
         )
         
-        mlus = []
-        path_lengths = []
+        sp_mlus = []
+        opt_mlus = []
+        
+        sp_loss_rates = []
+        opt_loss_rates = []
+        
         total_episodes = 0
         
-        for s_mlus, s_paths, s_episodes in results:
-            mlus.extend(s_mlus)
-            path_lengths.extend(s_paths)
+        for s_sp, s_opt, s_episodes in results:
+            sp_mlus.extend(s_sp)
+            opt_mlus.extend(s_opt)
             total_episodes += s_episodes
-                        
+            
+            for m in s_sp:
+                sp_loss_rates.append(max(0.0, 1.0 - 1.0/m) if m > 0 else 0.0)
+                
+            for m in s_opt:
+                opt_loss_rates.append(max(0.0, 1.0 - 1.0/m) if m > 0 else 0.0)
+            
         return {
-            'mlu_mean': np.mean(mlus),
-            'mlu_std': np.std(mlus),
-            'mlu_median': np.median(mlus),
-            'mlu_min': np.min(mlus),
-            'mlu_max': np.max(mlus),
-            'path_length_mean': np.mean(path_lengths),
-            'success_rate': 1.0,
-            'num_episodes': total_episodes
+            'sp': {
+                'mlu_mean': np.mean(sp_mlus),
+                'mlu_std': np.std(sp_mlus),
+                'mlu_median': np.median(sp_mlus),
+                'mlu_max': np.max(sp_mlus),
+                'loss_mean': np.mean(sp_loss_rates),
+                'loss_max': np.max(sp_loss_rates),
+                'num_episodes': total_episodes
+            },
+            'oracle': {
+                'mlu_mean': np.mean(opt_mlus),
+                'mlu_std': np.std(opt_mlus),
+                'mlu_median': np.median(opt_mlus),
+                'mlu_max': np.max(opt_mlus),
+                'loss_mean': np.mean(opt_loss_rates),
+                'loss_max': np.max(opt_loss_rates),
+                'num_episodes': total_episodes
+            }
         }
 
     def print_results(self, results_dict, baseline_results):
         """Print comparison results."""
-        print("\n" + "="*90)
+        print("\n" + "="*110)
         print("MLU BENCHMARK RESULTS")
-        print("="*90)
+        print("="*110)
+        
+        sp_res = baseline_results['sp']
+        opt_res = baseline_results['oracle']
         
         header_parts = [f"{'Metric':<30}"]
         for agent_name in sorted(results_dict.keys()):
-            header_parts.append(f"{agent_name:<20}")
-        header_parts.append(f"{'Baseline (SP)':<20}")
+            header_parts.append(f"{agent_name:<15}")
+        header_parts.append(f"{'Baseline(SP)':<15}")
+        header_parts.append(f"{'Oracle(Opt)':<15}")
         print(" ".join(header_parts))
-        print("-"*90)
+        print("-"*110)
         
         metrics = [
             ('Mean MLU', 'mlu_mean'),
             ('Median MLU', 'mlu_median'),
             ('Std Dev MLU', 'mlu_std'),
             ('Max MLU', 'mlu_max'),
-            ('Mean Path Length', 'path_length_mean'),
-            ('Success Rate (%)', 'success_rate'),
-            ('Episodes Evaluated', 'num_episodes'),
+            ('Mean Peak Loss Rate', 'loss_mean'), # NEW
+            ('Max Peak Loss Rate', 'loss_max'),   # NEW
         ]
         
         for label, key in metrics:
             row_parts = [f"{label:<30}"]
             
+            # Agents
             for agent_name in sorted(results_dict.keys()):
-                agent_val = results_dict[agent_name][key]
-                if key == 'success_rate':
-                    row_parts.append(f"{agent_val*100:.2f}%".ljust(20))
-                elif key == 'num_episodes':
-                    row_parts.append(f"{int(agent_val)}".ljust(20))
+                agent_val = results_dict[agent_name][key] if key in results_dict[agent_name] else 0.0
+                if 'loss' in key:
+                    row_parts.append(f"{agent_val:.4f}".ljust(15)) # e.g. 0.1234
                 else:
-                    row_parts.append(f"{agent_val:.4f}".ljust(20))
+                    row_parts.append(f"{agent_val:.4f}".ljust(15))
             
-            baseline_val = baseline_results[key]
-            if key == 'success_rate':
-                row_parts.append(f"{baseline_val*100:.2f}%".ljust(20))
-            elif key == 'num_episodes':
-                row_parts.append(f"{int(baseline_val)}".ljust(20))
+            # SP Baseline
+            if key in sp_res:
+                val = sp_res[key]
+                row_parts.append(f"{val:.4f}".ljust(15))
+            else: 
+                row_parts.append("-".ljust(15))
+                
+            # Oracle
+            if key in opt_res:
+                val = opt_res[key]
+                row_parts.append(f"{val:.4f}".ljust(15))
             else:
-                row_parts.append(f"{baseline_val:.4f}".ljust(20))
+                 row_parts.append("-".ljust(15))
             
             print(" ".join(row_parts))
         
-        # Improvement calculation
-        print("\n" + "="*90)
-        print("PERFORMANCE COMPARISON (vs Baseline)")
-        print("="*90)
+        # Improvement & GAP SCORE
+        print("\n" + "="*110)
+        print("PERFORMANCE COMPARISON (Gap Closure Score)")
+        print("="*110)
+        
+        sp_mean = sp_res['mlu_mean']
+        opt_mean = opt_res['mlu_mean']
+        max_possible_gain = sp_mean - opt_mean
+        
+        print(f"Max Possible Gain (SP - Oracle): {max_possible_gain:.4f}")
         
         for agent_name in sorted(results_dict.keys()):
-            agent_results = results_dict[agent_name]
-            # Positive % means lower MLU (better)
-            mlu_improvement = ((baseline_results['mlu_mean'] - agent_results['mlu_mean']) / baseline_results['mlu_mean']) * 100
+            agent_mean = results_dict[agent_name]['mlu_mean']
+            agent_gain = sp_mean - agent_mean
             
-            print(f"\n{agent_name}:")
-            print(f"  MLU Improvement: {mlu_improvement:+.2f}%")
-            if mlu_improvement > 0.1:
-                print(f"  ✅ {agent_name} performs BETTER than baseline (lower MLU)")
-            elif mlu_improvement < -0.1:
-                print(f"  ❌ {agent_name} performs WORSE than baseline (higher MLU)")
+            # Gap Score Calculation
+            # Score = (SP - Agent) / (SP - Optimal) * 100
+            if max_possible_gain > 1e-9:
+                gap_score = (agent_gain / max_possible_gain) * 100
             else:
-                print(f"  ➖ {agent_name} performs SAME as baseline")
+                gap_score = 0.0 # No gain possible
+                
+            print(f"\n{agent_name}:")
+            print(f"  MLU Improvement: {agent_gain:.4f}")
+            print(f"  Gap Score:       {gap_score:.2f}% (Percentage of optimality gap closed)")
+            
+            if gap_score > 0:
+                 print(f"  ✅ {agent_name} closes {gap_score:.1f}% of the gap to optimal.")
         
-        print("\n" + "="*90)
+        print("\n" + "="*110)
 
     def run(self):
         print("="*90)
-        print("MLU BENCHMARK - Evaluating Agents vs Baseline (Shortest Path)")
+        print("MLU BENCHMARK - Evaluating Agents vs Baseline vs Oracle")
         print("="*90)
         
         # Load samples
@@ -329,8 +383,6 @@ class BenchmarkRunner:
             print(f"\nInitializing environment for PPO...")
             env = KDNEnvinronment(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
             try:
-                # Pass model_instance if available, but checking agent_type match if needed.
-                # Assuming model_instance corresponds to agent_type.
                 model_inst = self.model_instance if self.agent_type == 'PPO' else None
                 res = self.evaluate_agent_mlu(self.ppo_path, env, samples, 'PPO', model_instance=model_inst)
                 results_dict['PPO'] = res
@@ -352,10 +404,10 @@ class BenchmarkRunner:
                 import traceback
                 traceback.print_exc()
 
-        # Baseline
-        print(f"\nInitializing environment for Baseline...")
+        # Baseline & Oracle
+        print(f"\nInitializing environment for Baselines...")
         env = KDNEnvinronment(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
-        baseline_results = self.evaluate_baseline_sp(env, samples)
+        baseline_results = self.evaluate_baselines(env, samples)
         
         if results_dict:
             self.print_results(results_dict, baseline_results)

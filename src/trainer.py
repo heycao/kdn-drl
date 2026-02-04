@@ -27,6 +27,8 @@ class CustomLoggingCallback(BaseCallback):
         self.optimal_rates = deque(maxlen=100)
         self.optimal_sp_rates = deque(maxlen=100)
         self.improvements = deque(maxlen=100)
+        self.gap_scores = deque(maxlen=100)
+        self.peak_loss_rates = deque(maxlen=100)
 
     def _on_step(self) -> bool:
         # Check if any of the environments finished an episode
@@ -42,6 +44,10 @@ class CustomLoggingCallback(BaseCallback):
                     self.optimal_sp_rates.append(float(info['is_optimal_shortest']))
                 if 'improvement' in info:
                     self.improvements.append(info['improvement'])
+                if 'gap_score' in info:
+                    self.gap_scores.append(info['gap_score'])
+                if 'peak_loss_rate' in info:
+                    self.peak_loss_rates.append(info['peak_loss_rate'])
         
         # Record metrics if we have data
         if len(self.mlus) > 0:
@@ -54,6 +60,10 @@ class CustomLoggingCallback(BaseCallback):
             self.logger.record("rollout/optimal_sp_rate", np.mean(self.optimal_sp_rates))
         if len(self.improvements) > 0:
             self.logger.record("rollout/improvement", np.mean(self.improvements))
+        if len(self.gap_scores) > 0:
+            self.logger.record("rollout/gap_score", np.mean(self.gap_scores))
+        if len(self.peak_loss_rates) > 0:
+            self.logger.record("rollout/peak_loss_rate", np.mean(self.peak_loss_rates))
             
         return True
 
@@ -116,7 +126,7 @@ class Trainer:
                         
                         # 2. Calc Shortest Path (Hops)
                         try:
-                            shortest_path = nx.shortest_path(sample.topology_object, src, dst, weight=None)
+                            shortest_path = nx.shortest_path(sample.topology_object, src, dst, weight='weight')
                         except nx.NetworkXNoPath:
                             shortest_path = None
                             
@@ -127,9 +137,15 @@ class Trainer:
                             if shortest_path and optimal_path and shortest_path == optimal_path:
                                 is_valid = True
                         elif self.data_filter == 'optimal':
-                            # optimal path IS NOT shortest path
-                            if shortest_path and optimal_path and shortest_path != optimal_path:
-                                is_valid = True
+                            # optimal path should be > 10% better than shortest path
+                            if shortest_path and optimal_path:
+                                sp_mlu = sample.calculate_max_utilization(shortest_path, bg_loads)
+                                opt_mlu = sample.calculate_max_utilization(optimal_path, bg_loads)
+                                
+                                if sp_mlu > 0:
+                                    improvement = (sp_mlu - opt_mlu) / sp_mlu
+                                    if improvement > 0.10:
+                                        is_valid = True
                         
                         if is_valid:
                             valid_samples.append((sample, src, dst))
@@ -197,7 +213,7 @@ class Trainer:
             policy_kwargs=policy_kwargs,
             verbose=1,
             learning_rate=3e-4,
-            n_steps=2048,   
+            n_steps=256,   
             batch_size=64, 
             n_epochs=10,
             gamma=0.99,
