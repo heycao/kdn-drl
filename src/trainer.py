@@ -5,11 +5,12 @@ import networkx as nx
 from collections import deque
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 from stable_baselines3.common.env_util import make_vec_env
 from tqdm import tqdm
 
-from src.masked_env import MaskedKDNEnv
+from src.env import KDNEnvinronment
 from src.deflation_env import DeflationEnv
 from src.gcn import GCNFeatureExtractor
 from src.gat import GATFeatureExtractor
@@ -75,7 +76,7 @@ def mask_fn(env):
 class Trainer:
     def __init__(self, tfrecords_dir, traffic_intensity, data_filter="all", n_envs=8, 
                  dataset_name=None, model_type="MaskPPO", gnn_type="gcn", 
-                 env_type="kdn", device=None):
+                 env_type="kdn", device=None, min_hops=4):
         self.tfrecords_dir = tfrecords_dir
         self.traffic_intensity = traffic_intensity
         self.data_filter = data_filter
@@ -84,6 +85,7 @@ class Trainer:
         self.model_type = model_type
         self.gnn_type = gnn_type
         self.env_type = env_type
+        self.min_hops = min_hops
         
         # Device detection
         if device:
@@ -111,6 +113,7 @@ class Trainer:
         valid_samples = []
         
         with tqdm(total=max_samples, desc="Valid Samples", unit="pair") as pbar:
+            total_checked = 0
             for i, sample in enumerate(reader):
                 n = sample.get_network_size()
                 
@@ -118,6 +121,10 @@ class Trainer:
                 for src in range(n):
                     for dst in range(n):
                         if src == dst: continue
+                        
+                        total_checked += 1
+                        if total_checked % 1000 == 0:
+                            pbar.set_postfix({"checked": total_checked})
                         
                         # --- Filter Logic ---
                         # 1. Calc BG Loads & Optimal Path
@@ -135,7 +142,9 @@ class Trainer:
                         if self.data_filter == 'sp':
                             # shortest_path IS optimal path
                             if shortest_path and optimal_path and shortest_path == optimal_path:
-                                is_valid = True
+                                # Check hops condition: len(path) > min_hops + 1
+                                if len(shortest_path) > self.min_hops + 1:
+                                    is_valid = True
                         elif self.data_filter == 'optimal':
                             # optimal path should be > 10% better than shortest path
                             if shortest_path and optimal_path:
@@ -144,8 +153,10 @@ class Trainer:
                                 
                                 if sp_mlu > 0:
                                     improvement = (sp_mlu - opt_mlu) / sp_mlu
-                                    if improvement > 0.10:
-                                        is_valid = True
+                                    if improvement > 0.01:
+                                        # Check hops condition: len(path) > min_hops + 1
+                                        if len(shortest_path) > self.min_hops + 1:
+                                            is_valid = True
                         
                         if is_valid:
                             valid_samples.append((sample, src, dst))
@@ -171,17 +182,22 @@ class Trainer:
         env_kwargs = {
             "tfrecords_dir": self.tfrecords_dir,
             "traffic_intensity": self.traffic_intensity,
-            "prefiltered_samples": prefiltered_samples # Pass filtered list
+            "prefiltered_samples": prefiltered_samples, # Pass filtered list
         }
 
         # Select Environment Class
         if self.env_type == "deflation":
             env_cls = DeflationEnv
         else:
-            env_cls = MaskedKDNEnv
+            # Default to base kdn environment
+            env_cls = KDNEnvinronment
 
-        # Initialize training environment with action masking
-        print(f"Initializing {self.n_envs} training environments ({self.env_type}) with action masking...")
+        # Auto-detect if environment supports masking
+        use_masking = hasattr(env_cls, 'action_masks')
+        print(f"Environment {env_cls.__name__} masking support: {use_masking}")
+
+        # Initialize training environment
+        print(f"Initializing {self.n_envs} training environments ({self.env_type})...")
         env = make_vec_env(
             env_cls,
             n_envs=self.n_envs,
@@ -189,25 +205,40 @@ class Trainer:
             vec_env_cls=None,
         )
 
-        # Set up MaskablePPO model
-        features_extractor_class = GCNFeatureExtractor
+        # Set up Policy and Features Extractor
+        policy_kwargs = {}
+        features_extractor_class = None
+        
         if self.gnn_type == "gat":
             features_extractor_class = GATFeatureExtractor
             print("Using GAT Feature Extractor")
-        else:
+        elif self.gnn_type == "gcn":
+            features_extractor_class = GCNFeatureExtractor
             print("Using GCN Feature Extractor")
+        elif self.gnn_type == "none" or not self.gnn_type:
+            print("Using Default Feature Extractor (MLP/Flatten)")
+        else:
+            print(f"Unknown gnn_type '{self.gnn_type}', falling back to MLP.")
 
-        # Optimized GCN/GAT config (Small Model sufficient due to correct scaling)
-        policy_kwargs = dict(
-            features_extractor_class=features_extractor_class,
-            features_extractor_kwargs=dict(
-                hidden_dim=64,
-                n_layers=2,
-                out_dim=None
+        if features_extractor_class:
+            policy_kwargs = dict(
+                features_extractor_class=features_extractor_class,
+                features_extractor_kwargs=dict(
+                    hidden_dim=64,
+                    n_layers=2,
+                    out_dim=None
+                )
             )
-        )
         
-        self.model = MaskablePPO(
+        # Select Model Class
+        if use_masking:
+            model_cls = MaskablePPO
+            print("Using MaskablePPO (Masking Enabled)")
+        else:
+            model_cls = PPO
+            print("Using Standard PPO (Masking Disabled)")
+
+        self.model = model_cls(
             "MultiInputPolicy",
             env,
             policy_kwargs=policy_kwargs,

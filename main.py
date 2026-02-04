@@ -32,7 +32,7 @@ def main():
     parser.add_argument("--traffic_intensity", type=int, default=9, help="Traffic intensity filter")
     parser.add_argument("--dataset_name", type=str, default=None, help="Dataset name (optional)")
     parser.add_argument("--model_type", type=str, default="MaskPPO", help="Model type identifier (default: MaskPPO)")
-    parser.add_argument("--gnn_type", type=str, default="gcn", choices=["gcn", "gat"], help="GNN type: 'gcn' or 'gat'")
+    parser.add_argument("--gnn_type", type=str, default="gcn", choices=["gcn", "gat", "none"], help="GNN type: 'gcn', 'gat', or 'none'")
     parser.add_argument("--device", type=str, default=None, help="Device (cpu, cuda, mps). Auto-detect if None.")
 
     # --- Training Arguments ---
@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--log_interval", type=int, default=1, help="Log interval")
     parser.add_argument("--model_path", type=str, default="final_model", help="Filename for saved model")
     parser.add_argument("--data_filter", type=str, default="all", choices=["all", "sp", "optimal"], help="Data filter strategy")
+    parser.add_argument("--min_hops", type=int, default=4, help="Minimum shortest path hops for filtering (default: 4)")
     
     # --- Benchmark Arguments ---
     parser.add_argument("--run_benchmark", type=str2bool, default=True, help="Run benchmark after training?")
@@ -64,7 +65,8 @@ def main():
         model_type=args.model_type,
         gnn_type=args.gnn_type,
         env_type=args.env_type,
-        device=args.device
+        device=args.device,
+        min_hops=args.min_hops
     )
     
     trainer.train(
@@ -74,8 +76,7 @@ def main():
     )
     
     # Construct expected model path for benchmark
-    # Trainer saves to: agents/{dataset}_{intensity}_{model}_{gnn}/{model_path}
-    # If model_path is just a filename "final_model", it appends it.
+    # Trainer saves to: agents/{dataset}_{intensity}_{model}_{gnn}_{env}/{model_path}
     save_dir = trainer.base_save_dir
     final_model_full_path = os.path.join(save_dir, args.model_path)
 
@@ -86,18 +87,12 @@ def main():
         print("PHASE 2: BENCHMARKING")
         print("="*50)
         
-        # We need to map model_type to agent_type expected by BenchmarkRunner
-        # BenchmarkRunner expects 'MaskPPO' or 'PPO' or 'all'.
-        # Assuming model_type "MaskPPO" maps to agent_type "MaskPPO"
-        
-        agent_type_arg = args.model_type
-        if agent_type_arg not in ['PPO', 'MaskPPO']:
-             # Fallback or assume it fits one of them. 
-             # For now let's assume if it contains PPO it is PPO, if Mask it is MaskPPO.
-             if "Mask" in agent_type_arg:
-                 agent_type_arg = "MaskPPO"
-             else:
-                 agent_type_arg = "PPO"
+        # Determine actual model type used (for BenchmarkRunner selection)
+        # If Trainer used PPO (because env has no masking), we use 'PPO'
+        use_masking = hasattr(trainer.model, "action_masks") # Only MaskablePPO has this in SB3-contrib directly? No, actually trainer knows.
+        # Simple check: 
+        from sb3_contrib import MaskablePPO
+        agent_type_arg = "MaskPPO" if isinstance(trainer.model, MaskablePPO) else "PPO"
 
         # Paths
         ppo_path = final_model_full_path if agent_type_arg == "PPO" else "agents/ppo_model"

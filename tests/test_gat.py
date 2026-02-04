@@ -68,10 +68,13 @@ def collect_data(env, num_samples=1000, mode='random'):
         if not paths_to_add:
             continue
             
+        if not paths_to_add:
+            continue
+            
         base_obs = env._get_obs()
         for path in paths_to_add:
-            link_loads = env._calculate_background_loads(src, dst)
-            mlu = env._calculate_max_utilization(path, link_loads)
+            link_loads = env.sample.calculate_background_loads(src, dst)
+            mlu = env.sample.calculate_max_utilization(path, link_loads)
             path_arr = np.full(env.max_steps + 1, -1, dtype=int)
             path_len = min(len(path), env.max_steps + 1)
             path_arr[:path_len] = path[:path_len]

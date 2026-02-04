@@ -8,7 +8,6 @@ from tqdm import tqdm
 import networkx as nx
 
 from src.env import KDNEnvinronment
-from src.masked_env import MaskedKDNEnv
 from src.deflation_env import DeflationEnv
 from src.datanet import Datanet
 from src.gcn import GCNFeatureExtractor
@@ -74,17 +73,22 @@ class BenchmarkRunner:
             # Create a local environment for this worker
             if agent_label == 'MaskPPO':
                 if env_type == "deflation":
-                    local_env = DeflationEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity, calc_optimal=True)
+                    local_env = DeflationEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                 else:
-                    local_env = MaskedKDNEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                    local_env = KDNEnvinronment(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                     
-                custom_objects = {"features_extractor_class": GCNFeatureExtractor}
+                # Attempt to load with custom extractors if they exist
+                custom_objects = {}
+                try:
+                    custom_objects["features_extractor_class"] = GCNFeatureExtractor
+                except:
+                    pass
                 local_model = MaskablePPO.load(agent_path, device="cpu", custom_objects=custom_objects)
                 use_masking = True
             else:
                 # PPO case (usually unmasked)
                 if env_type == "deflation":
-                     local_env = DeflationEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity, calc_optimal=True)
+                     local_env = DeflationEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                 else:
                     local_env = KDNEnvinronment(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                 local_model = PPO.load(agent_path, device="cpu")
@@ -103,18 +107,8 @@ class BenchmarkRunner:
                     if src == dst: continue
                     
                     sample_episodes += 1
-                    if env_type == "deflation":
-                        # Use proper reset to initialize DeflationEnv state (topology copies, MLU calcs, etc.)
-                        obs, _ = local_env.reset(options={"sample": sample, "src": src, "dst": dst})
-                    else:
-                        # Manual injection for KDNEnvinronment (Legacy)
-                        local_env.sample = sample
-                        local_env.current_node = src
-                        local_env.destination = dst
-                        local_env.path = [src]
-                        local_env.current_step = 0
-                        local_env.optimal_path = None
-                        obs = local_env._get_obs()
+                    # Use proper reset to initialize Env state (topology copies, MLU calcs, etc.)
+                    obs, _ = local_env.reset(options={"sample": sample, "src": src, "dst": dst})
                     done = truncated = False
                     steps = 0
                     max_steps = 50
@@ -135,22 +129,22 @@ class BenchmarkRunner:
                             if 'mlu' in info: episode_mlu = info['mlu']
                             if info.get('is_success', False): episode_success = True
                             
-                    if env_type == "deflation":
-                         # DeflationEnv: Use Best-So-Far metrics found during episode
-                         episode_mlu = local_env.min_mlu_so_far
-                         p_len = len(local_env.best_path_so_far)
-                         
-                         if local_env.original_mlu - episode_mlu > 1e-4:
-                             episode_success = True
-                    else:
-                         # KDNEnv: Use final metrics
-                         p_len = len(local_env.path)
+                if env_type == "deflation" or True: # All current envs use this
+                    # Use Best-So-Far metrics found during episode
+                    episode_mlu = local_env.min_mlu_so_far
+                    p_len = len(local_env.best_path_so_far)
                     
-                    if episode_success:
-                        sample_success_count += 1
-                    
-                    sample_mlus.append(episode_mlu)
-                    sample_path_lengths.append(p_len)
+                    if local_env.original_mlu - episode_mlu > 1e-4:
+                        episode_success = True
+                else:
+                    # Fallback for any old envs
+                    p_len = len(local_env.current_path)
+                
+                if episode_success:
+                    sample_success_count += 1
+                
+                sample_mlus.append(episode_mlu)
+                sample_path_lengths.append(p_len)
             
             return sample_mlus, sample_path_lengths, sample_success_count, sample_episodes
 
@@ -392,9 +386,9 @@ class BenchmarkRunner:
         if self.agent_type in ['MaskPPO', 'all']:
             print(f"\nInitializing environment for MaskPPO ({self.env_type})...")
             if self.env_type == "deflation":
-                env = DeflationEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity, calc_optimal=True)
+                env = DeflationEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
             else:
-                env = MaskedKDNEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
+                env = KDNEnvinronment(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
             try:
                 model_inst = self.model_instance if self.agent_type == 'MaskPPO' else None
                 res = self.evaluate_agent_mlu(self.maskppo_path, env, samples, 'MaskPPO', model_instance=model_inst)

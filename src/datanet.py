@@ -931,10 +931,15 @@ class Datanet:
                         if len(s._results_line) == 0:
                             break
 
-                        self._process_flow_results_traffic_line(s._results_line, s._flowresults_line, simParameters, s)
-                        s._set_routing_matrix(routing_matrix)
-                        s._set_topology_object(g)
-                        yield s
+                        try:
+                            self._process_flow_results_traffic_line(s._results_line, s._flowresults_line, simParameters, s)
+                            s._set_routing_matrix(routing_matrix)
+                            s._set_topology_object(g)
+                            yield s
+                        except ValueError as e:
+                            # Skip malformed lines (e.g. null bytes in flow results)
+                            # print(f"Skipping malformed sample in {file}: {e}")
+                            continue
         if not graph_file:
             print('ERROR: The API was not able to find the graph information file in any of the following dirs {}.'
                   .format(s_dirs))

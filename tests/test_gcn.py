@@ -178,7 +178,7 @@ class TestGCNFeatureExtractor:
 
         # Initialize environment (using same logic as training)
         try:
-            env = DeflationEnv(tfrecords_dir=data_dir, traffic_intensity=9, calc_optimal=True)
+            env = DeflationEnv(tfrecords_dir=data_dir, traffic_intensity=9)
         except Exception as e:
             pytest.fail(f"Failed to initialize DeflationEnv: {e}")
             
