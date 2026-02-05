@@ -2,6 +2,20 @@
 
 This project implements a Deep Reinforcement Learning (DRL) approach for network routing optimization, leveraging Knowledge Defined Networking (KDN) concepts. It supports training and benchmarking of agents (e.g., MaskPPO) in simulated network environments (Deflection, KDN).
 
+## Datasets
+
+This project uses network modeling datasets (NSFNet, GEANT2, etc.) for training and benchmarking.
+
+1. **Download**: Visit [Knowledge-Defined Networking Training Datasets](https://knowledgedefinednetworking.org/) to download the required datasets (TFRecords format).
+2. **Extraction**: Unzip the downloaded datasets into the `data/` directory.
+3. **Structure**: Ensure the data is organized as follows:
+
+```bash
+data/
+├── nsfnetbw/  # Example dataset
+└── geant2bw/  # Example dataset
+```
+
 ## Usage
 
 The primary entry point is `main.py`, which handles both training and benchmarking phases sequentially.
