@@ -11,7 +11,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from tqdm import tqdm
 
 from src.env import KDNEnvinronment
-from src.deflation_env import DeflationEnv
+from src.deflection_env import DeflectionEnv
 from src.gcn import GCNFeatureExtractor
 from src.gat import GATFeatureExtractor
 from src.datanet import Datanet
@@ -186,8 +186,8 @@ class Trainer:
         }
 
         # Select Environment Class
-        if self.env_type == "deflation":
-            env_cls = DeflationEnv
+        if self.env_type == "deflection":
+            env_cls = DeflectionEnv
         else:
             # Default to base kdn environment
             env_cls = KDNEnvinronment

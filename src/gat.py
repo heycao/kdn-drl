@@ -99,48 +99,46 @@ class GATFeatureExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Dict, features_dim: int = 128, 
                  hidden_dim: int = 128, n_layers: int = 2, out_dim: int = None, heads: int = 1):
         
-        n = observation_space["traffic"].shape[0]
+        n = observation_space["traffic_demand"].shape[0]
+        k = observation_space["edge_features"].shape[0]
         
-        # Output dim logic
-        # If concat=True, hidden_dim usually means "per head" or "total"?
-        # Let's assume hidden_dim is per-head output size?
-        # Or hidden_dim is total? Standard PyG: out_channels is per head.
-        # Let's stick to hidden_dim = out_channels per head.
+        # Edge Embedding Dim:
+        # Node_u (Hidden) + Node_v (Hidden) + Edge_Feats (4)
+        self.edge_embedding_dim = hidden_dim * 2 +  head_dim if 'head_dim' in locals() else hidden_dim * 2 + 4 # This is tricky, let's just use fixed logic from GCN
+        self.edge_embedding_dim = hidden_dim * 2 + 4
         
-        # For simplicity in this env, we might just use heads=1 by default to match GCN size.
+        super_features_dim = out_dim if out_dim is not None else (hidden_dim * heads * k + 6) # Simplified to match action-centric
         
-        super_features_dim = out_dim if out_dim is not None else (n * hidden_dim * heads + 4)
         super(GATFeatureExtractor, self).__init__(observation_space, super_features_dim)
         
         self.n = n
+        self.k = k
         self.hidden_dim = hidden_dim
         self.n_layers = n_layers
         self.out_dim = out_dim
         self.heads = heads
         
         # Input features (Same as GCN)
-        input_dim = 11
+        input_dim = 9
         
         self.gat_layers = nn.ModuleList()
         # First layer
         self.gat_layers.append(GATLayer(input_dim, hidden_dim, heads=heads, concat=True))
         
         # Subsequent layers
-        # Input to next layer is hidden_dim * heads (if previous was concat)
         for i in range(n_layers - 1):
             in_d = hidden_dim * heads
-            # Last layer usually averages if it's classification, but here we want embeddings.
-            # We can keep concatenating or average.
-            # Let's concat for all intermediate, and maybe avg for last?
-            # Or concat for all.
-            # If we concat, the dimension grows or we keep projection roughly same?
-            # Let's keep concat=True for valid representation power.
             self.gat_layers.append(GATLayer(in_d, hidden_dim, heads=heads, concat=True))
         
         self.flatten = nn.Flatten()
         
-        # Flattened dim: N * (hidden_dim * heads)
-        self.post_concat_dim = n * (hidden_dim * heads) + 4
+        # Final Readout Dim:
+        # Flatten(EdgeEmbed) + GlobalFeatures(6)
+        self.post_concat_dim = (hidden_dim * heads * 2 + 4) * k + 6 # Simplified
+        
+        # Actually GAT doesn't do edge gathering in its current old implementation. 
+        # I should probably just make it match GCN's structure roughly but with GAT layers.
+        # For conservation of time, I will make it work with the current observation space.
         
         self.projection = None
         if out_dim is not None:
@@ -153,97 +151,111 @@ class GATFeatureExtractor(BaseFeaturesExtractor):
             self._features_dim = self.post_concat_dim
             
     def forward(self, observations):
-        # 1. Extract Inputs (Shared logic with GCN)
-        adj = observations["topology"]
-        # Normalize? GAT doesn't strictly need Norm Adj like GCN, but scaling helps optimization.
-        # However, GAT computes content-based attention. 
-        # Raw Adjacency for masking is fine.
+        # 1. Unpack Observations
+        traffic = observations["traffic_demand"]
+        edge_endpoints = observations["edge_endpoints"].long()
+        edge_features = observations["edge_features"]
+        path = observations["path"].long()
         
-        B, N, _ = adj.shape
-        device = adj.device
+        B, N, _ = traffic.shape
+        K = edge_features.shape[1]
+        device = traffic.device
         
-        # 2. Construct Node Features (Same as GCN)
-        traffic = observations["traffic"]
-        dest = observations["destination"].long() # (B, 1)
-        path = observations["path"].long() # (B, MaxSteps)
-        
-        # Feature: Is Destination
-        is_dest = F.one_hot(dest.squeeze(1), num_classes=self.n).float().unsqueeze(2)
-        
-        # Feature: Is Current Node
+        # Extract Destination from Path
         mask = (path != -1)
         lens = mask.sum(dim=1)
         batch_indices = torch.arange(B, device=device)
-        current_node_indices = path[batch_indices, lens - 1]
-        is_current = F.one_hot(current_node_indices, num_classes=self.n).float().unsqueeze(2)
+        safe_lens = torch.clamp(lens - 1, min=0)
+        dest = path[batch_indices, safe_lens].unsqueeze(1) # (B, 1)
+        
+        # 2. Reconstruct Adjacency Matrix (B, N, N)
+        batch_ids = torch.arange(B, device=device).view(B, 1).expand(B, K)
+        u_indices = edge_endpoints[:, :, 0]
+        v_indices = edge_endpoints[:, :, 1]
+        
+        flat_indices = batch_ids * (N * N) + u_indices * N + v_indices
+        flat_values = edge_features[:, :, 2].reshape(-1) # IsActive
+        
+        flat_adj = torch.zeros(B * N * N, device=device)
+        flat_adj.scatter_add_(0, flat_indices.view(-1), flat_values)
+        adj = flat_adj.view(B, N, N)
+        
+        # 2.1 Capacity Matrix Reconstruction
+        flat_cap_vals = (edge_features[:, :, 0] * edge_features[:, :, 2]).reshape(-1)
+        flat_cap_mat = torch.zeros(B * N * N, device=device)
+        flat_cap_mat.scatter_add_(0, flat_indices.view(-1), flat_cap_vals)
+        cap_mat = flat_cap_mat.view(B, N, N)
+        
+        # 3. Construct Node Features
+        dest_indices = dest.squeeze(1).clone()
+        dest_indices[dest_indices < 0] = 0
+        is_dest = F.one_hot(dest_indices, num_classes=self.n).float().unsqueeze(2)
 
-        # Feature: Is Visited
+        src_indices = path[:, 0].clone()
+        src_indices[src_indices < 0] = 0
+        is_source = F.one_hot(src_indices, num_classes=self.n).float().unsqueeze(2)
+
         path_safe = path.clone()
         path_safe[path < 0] = 0
         path_one_hot = F.one_hot(path_safe, num_classes=self.n).float()
         mask_t = (path != -1).float().unsqueeze(2)
         path_one_hot = path_one_hot * mask_t
         is_visited = path_one_hot.sum(dim=1).clamp(0, 1).unsqueeze(2)
-        
-        # Feature: Utilizations
-        raw_adj = observations["topology"]
-        edge_util = traffic / (raw_adj + 1e-9)
-        edge_util = torch.where(raw_adj > 1e-9, edge_util, torch.zeros_like(edge_util))
 
-        traffic_out_sum = torch.log1p(traffic.sum(dim=2).unsqueeze(2))
-        traffic_in_sum = torch.log1p(traffic.sum(dim=1).unsqueeze(2))
-        cap_out_sum = torch.log1p(raw_adj.sum(dim=2).unsqueeze(2))
-        cap_in_sum = torch.log1p(raw_adj.sum(dim=1).unsqueeze(2))
-        util_out_max = edge_util.max(dim=2)[0].unsqueeze(2) 
-        util_in_max = edge_util.max(dim=1)[0].unsqueeze(2)
+        target_demand_val = traffic[batch_indices, src_indices, dest.squeeze(1)].unsqueeze(1).unsqueeze(2)
+        target_demand_node = torch.zeros(B, N, 2, device=device)
+        target_demand_node[batch_indices, src_indices, 0] = target_demand_val.squeeze()
+        target_demand_node[batch_indices, dest.squeeze(1), 1] = target_demand_val.squeeze()
         
-        bg_util = observations["link_utilization"]
-        bg_util_out_max = bg_util.max(dim=2)[0].unsqueeze(2)
-        bg_util_in_max = bg_util.max(dim=1)[0].unsqueeze(2)
-        
+        traffic_scaled = torch.log1p(traffic)
+        cap_mat_scaled = torch.log1p(cap_mat)
+        target_demand_node = torch.log1p(target_demand_node)
+
+        traffic_out_sum = traffic_scaled.sum(dim=2).unsqueeze(2)
+        traffic_in_sum = traffic_scaled.sum(dim=1).unsqueeze(2)
+        cap_out_sum = cap_mat_scaled.sum(dim=2).unsqueeze(2)
+        cap_in_sum = cap_mat_scaled.sum(dim=1).unsqueeze(2)
+
         x = torch.cat([
-            is_dest, is_current, is_visited, 
+            is_dest, is_source, is_visited, 
+            target_demand_node,
             traffic_out_sum, traffic_in_sum,
-            cap_out_sum, cap_in_sum,
-            util_out_max, util_in_max,
-            bg_util_out_max, bg_util_in_max
+            cap_out_sum, cap_in_sum
         ], dim=2)
         
-        # 3. GAT Forward
+        # 4. Run GAT
         for layer in self.gat_layers:
-            x = F.elu(layer(x, adj)) # ELU is often used in GAT
+            x = F.elu(layer(x, adj))
+            
+        # 5. Edge Gathering
+        def batch_gather(tensor, indices):
+            F_dim = tensor.shape[2]
+            indices_expanded = indices.unsqueeze(2).expand(-1, -1, F_dim)
+            return torch.gather(tensor, 1, indices_expanded)
+            
+        h_u = batch_gather(x, u_indices)
+        h_v = batch_gather(x, v_indices)
         
-        # 4. Global Path Features (Same as GCN)
-        total_edge_util = edge_util + bg_util
-        T = path.shape[1]
-        u = path[:, :-1]
-        v = path[:, 1:]
-        input_mask = (u != -1) & (v != -1)
-        u_safe = u.clone()
-        v_safe = v.clone()
-        u_safe[~input_mask] = 0
-        v_safe[~input_mask] = 0
-        flat_indices = u_safe * self.n + v_safe
-        flat_util = total_edge_util.view(B, self.n * self.n)
-        path_util_values = torch.gather(flat_util, 1, flat_indices)
+        edge_features_scaled = edge_features.clone()
+        edge_features_scaled[:, :, 0] = torch.log1p(edge_features[:, :, 0])
+        edge_features_scaled[:, :, 1] = torch.log1p(edge_features[:, :, 1])
         
-        path_util_vals_masked = path_util_values.clone()
-        path_util_vals_masked[~input_mask] = -1.0
-        max_path_util = path_util_vals_masked.max(dim=1)[0].unsqueeze(1)
+        edge_embeddings = torch.cat([h_u, h_v, edge_features_scaled], dim=2)
         
-        path_lens = input_mask.sum(dim=1).clamp(min=1).float().unsqueeze(1)
-        path_util_vals_zeroed = path_util_values.clone()
-        path_util_vals_zeroed[~input_mask] = 0.0
-        mean_path_util = path_util_vals_zeroed.sum(dim=1).unsqueeze(1) / path_lens
+        # 6. Global Features and Readout
+        e_flat = edge_embeddings.view(edge_embeddings.size(0), -1)
         
-        global_bg_max = bg_util.max(dim=1)[0].max(dim=1)[0].unsqueeze(1)
-        est_mlu = torch.maximum(max_path_util, global_bg_max)
+        global_bg_max = edge_features[:, :, 1].max(dim=1)[0].unsqueeze(1)
+        global_mean_util = edge_features[:, :, 1].mean(dim=1).unsqueeze(1)
+        global_max_cap = torch.log1p(edge_features[:, :, 0].max(dim=1)[0]).unsqueeze(1)
+        active_ratio = edge_features[:, :, 2].mean(dim=1).unsqueeze(1)
         
-        # 5. Connect
-        x_flat = self.flatten(x)
-        out = torch.cat([x_flat, max_path_util, mean_path_util, global_bg_max, est_mlu], dim=1)
+        max_avg_lambda = torch.log1p(observations["maxAvgLambda"])
+        total_traffic = torch.log1p(observations["traffic_demand"].sum(dim=(1, 2))).unsqueeze(1)
+        
+        out = torch.cat([e_flat, global_bg_max, global_mean_util, global_max_cap, active_ratio, max_avg_lambda, total_traffic], dim=1)
         
         if self.projection is not None:
-             out = self.projection(out)
-        
+            out = self.projection(out)
+            
         return out

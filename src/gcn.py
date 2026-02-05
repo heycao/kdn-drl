@@ -169,7 +169,7 @@ class GCNFeatureExtractor(BaseFeaturesExtractor):
         dest_indices[dest_indices < 0] = 0
         is_dest = F.one_hot(dest_indices, num_classes=self.n).float().unsqueeze(2) # (B, N, 1)
 
-        # Feature: Is Source (path[0] is source in DeflationEnv)
+        # Feature: Is Source (path[0] is source in DeflectionEnv)
         src_indices = path[:, 0].clone()
         src_indices[src_indices < 0] = 0
         is_source = F.one_hot(src_indices, num_classes=self.n).float().unsqueeze(2) # (B, N, 1)

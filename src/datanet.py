@@ -567,9 +567,16 @@ class Sample:
         edge_costs = {}
         max_bg_util = 0.0
         
-        for u, v, data in G.edges(data=True):
+        for u, v, key, data in G.edges(keys=True, data=True):
+            # Strict alignment with calculate_max_utilization: Only consider Key 0
+            # If the metric always uses G[u][v][0], the Oracle must only optimize for G[u][v][0].
+            if key != 0 and key != '0': 
+                continue
+
             capacity = float(data['bandwidth'])
             
+            # Note: bg_loads is keyed by (u, v), collapsing multi-edges.
+            # This is consistent with how calculate_background_loads produced it.
             current_load = bg_loads.get((u, v), 0.0)
             
             if capacity > 0:

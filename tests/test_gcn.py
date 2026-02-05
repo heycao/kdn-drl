@@ -169,7 +169,7 @@ class TestGCNFeatureExtractor:
         This uses the DeflationEnv to load existing TFRecords.
         """
         import os
-        from src.deflation_env import DeflationEnv
+        from src.deflection_env import DeflectionEnv
         
         # 1. Setup Environment with Real Data
         data_dir = 'data/nsfnetbw'
@@ -178,7 +178,7 @@ class TestGCNFeatureExtractor:
 
         # Initialize environment (using same logic as training)
         try:
-            env = DeflationEnv(tfrecords_dir=data_dir, traffic_intensity=9)
+            env = DeflectionEnv(tfrecords_dir=data_dir, traffic_intensity=9)
         except Exception as e:
             pytest.fail(f"Failed to initialize DeflationEnv: {e}")
             

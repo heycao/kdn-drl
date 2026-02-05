@@ -3,9 +3,9 @@ import numpy as np
 import networkx as nx
 import os
 import shutil
-from src.deflation_env import DeflationEnv
+from src.deflection_env import DeflectionEnv
 
-class TestDeflationEnv(unittest.TestCase):
+class TestDeflectionEnv(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # path to data (containing tar.gz and graph_attr.txt)
@@ -14,7 +14,7 @@ class TestDeflationEnv(unittest.TestCase):
             raise unittest.SkipTest("Data directory not found at data/nsfnetbw")
 
     def setUp(self):
-        self.env = DeflationEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
+        self.env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
         self.obs, _ = self.env.reset()
 
     def test_initial_state(self):
@@ -194,7 +194,7 @@ class TestDeflationEnv(unittest.TestCase):
 
     def test_termination_at_optimal(self):
         """Test that the environment terminates when optimal MLU is reached"""
-        self.env = DeflationEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
+        self.env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
         self.env.reset()
         
         if self.env.optimal_mlu is None:
@@ -224,7 +224,7 @@ class TestDeflationEnv(unittest.TestCase):
 
     def test_initial_optimality(self):
         """Test that environment terminates immediately if reset state is already optimal"""
-        self.env = DeflationEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
+        self.env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
         self.env.reset()
         
         # Manually force current_mlu to equal optimal_mlu

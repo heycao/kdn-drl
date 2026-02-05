@@ -28,10 +28,10 @@ def import_nx():
 class MockEnv:
     def __init__(self, n_nodes=14, max_steps=20):
         self.observation_space = gym.spaces.Dict({
-            "traffic": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
-            "topology": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
-            "link_utilization": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
-            "destination": gym.spaces.Box(low=0, high=n_nodes, shape=(1,), dtype=int),
+            "traffic_demand": gym.spaces.Box(low=0, high=np.inf, shape=(n_nodes, n_nodes), dtype=np.float32),
+            "edge_endpoints": gym.spaces.Box(low=0, high=n_nodes, shape=(10, 2), dtype=int),
+            "edge_features": gym.spaces.Box(low=0, high=np.inf, shape=(10, 4), dtype=np.float32),
+            "maxAvgLambda": gym.spaces.Box(low=0, high=np.inf, shape=(1,), dtype=np.float32),
             "path": gym.spaces.Box(low=-1, high=n_nodes, shape=(max_steps + 1,), dtype=int)
         })
 
@@ -49,8 +49,8 @@ def collect_data(env, num_samples=1000, mode='random'):
         opt_path = env.optimal_path
         
         G = env.sample.topology_object
-        src = env.current_node
-        dst = env.destination
+        src = env.src
+        dst = env.dst
         try:
             sp_path = list(next(import_nx().all_shortest_paths(G, src, dst)))
         except:
@@ -80,10 +80,10 @@ def collect_data(env, num_samples=1000, mode='random'):
             path_arr[:path_len] = path[:path_len]
             
             current_obs = {
-                "destination": base_obs["destination"].copy(),
-                "traffic": base_obs["traffic"].copy(),
-                "topology": base_obs["topology"].copy(),
-                "link_utilization": base_obs["link_utilization"].copy(),
+                "traffic_demand": base_obs["traffic_demand"].copy(),
+                "edge_endpoints": base_obs["edge_endpoints"].copy(),
+                "edge_features": base_obs["edge_features"].copy(),
+                "maxAvgLambda": base_obs["maxAvgLambda"].copy(),
                 "path": path_arr
             }
             observations.append(current_obs)
@@ -110,11 +110,11 @@ def test_gat_structure_defaults():
     env = MockEnv()
     extractor = GATFeatureExtractor(env.observation_space)
     
-    # Defaults should match GCN for consistency or reasonable GAT defaults
-    # n_layers=2, hidden=128 usually
     assert len(extractor.gat_layers) == 2
     assert extractor.hidden_dim == 128
-    assert extractor._features_dim == 14 * 128 + 4
+    # (128*1*2+4)*10 + 6 = 260*10 + 6 = 2606
+    expected_dim = 2606
+    assert extractor._features_dim == expected_dim
     assert extractor.projection is None
 
 def test_gat_structure_custom_params():
@@ -130,21 +130,16 @@ def test_gat_structure_custom_params():
     assert extractor._features_dim == 256
     assert extractor.projection is not None
     
-    # Valid path generation: Start with valid node, then some valid, then -1
-    # Random paths might start with -1 which breaks logic.
-    B, N = 4, 14
+    # Valid path generation
+    B, N, K = 4, 14, 10
     path_tensor = torch.full((B, 20), -1, dtype=torch.long)
-    path_tensor[:, 0] = torch.randint(0, N, (B,)) # Start node always valid
-    # Randomly fill next few steps
-    for i in range(B):
-        l = torch.randint(1, 5, (1,)).item()
-        path_tensor[i, 1:l] = torch.randint(0, N, (l-1,))
-        
+    path_tensor[:, 0] = torch.randint(0, N, (B,))
+    
     obs = {
-        "traffic": torch.rand(B, N, N),
-        "topology": torch.rand(B, N, N),
-        "link_utilization": torch.rand(B, N, N),
-        "destination": torch.randint(0, N, (B, 1)),
+        "traffic_demand": torch.rand(B, N, N),
+        "edge_endpoints": torch.randint(0, N, (B, K, 2)),
+        "edge_features": torch.rand(B, K, 4),
+        "maxAvgLambda": torch.rand(B, 1),
         "path": path_tensor
     }
     out = extractor(obs)
@@ -153,24 +148,26 @@ def test_gat_structure_custom_params():
 def test_gat_forward_pass_safety():
     if GATFeatureExtractor is None: pytest.skip("GAT not implemented")
     n_nodes = 5
+    n_edges = 10
     max_steps = 5
     mock_env = MockEnv(n_nodes, max_steps)
     extractor = GATFeatureExtractor(mock_env.observation_space, hidden_dim=32, n_layers=2)
     
     B = 2
     obs = {
-        "destination": torch.tensor([[4], [3]], dtype=torch.float32), 
-        "path": torch.full((B, max_steps + 1), -1, dtype=torch.float32),
-        "topology": torch.rand((B, n_nodes, n_nodes)),
-        "traffic": torch.rand((B, n_nodes, n_nodes)),
-        "link_utilization": torch.rand((B, n_nodes, n_nodes))
+        "traffic_demand": torch.rand((B, n_nodes, n_nodes)),
+        "path": torch.full((B, max_steps + 1), -1, dtype=torch.long),
+        "edge_endpoints": torch.randint(0, n_nodes, (B, n_edges, 2)),
+        "edge_features": torch.rand((B, n_edges, 4)),
+        "maxAvgLambda": torch.rand((B, 1))
     }
     obs["path"][0, 0] = 0
     obs["path"][1, 0] = 0
     obs["path"][1, 1] = 1
     
     output = extractor(obs)
-    expected_dim = n_nodes * 32 + 4
+    # (32*1*2+4)*10 + 6 = (64+4)*10 + 6 = 686
+    expected_dim = n_edges * (32 * 2 + 4) + 6
     assert output.shape == (B, expected_dim)
 
 # --- Integration Tests ---

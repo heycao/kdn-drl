@@ -29,10 +29,10 @@ def main():
 
     # --- Common Arguments ---
     parser.add_argument("--tfrecords_dir", type=str, default="data/nsfnetbw", help="Path to dataset root")
-    parser.add_argument("--traffic_intensity", type=int, default=9, help="Traffic intensity filter")
+    parser.add_argument("--traffic_intensity", type=int, default=15, help="Traffic intensity filter")
     parser.add_argument("--dataset_name", type=str, default=None, help="Dataset name (optional)")
     parser.add_argument("--model_type", type=str, default="MaskPPO", help="Model type identifier (default: MaskPPO)")
-    parser.add_argument("--gnn_type", type=str, default="gcn", choices=["gcn", "gat", "none"], help="GNN type: 'gcn', 'gat', or 'none'")
+    parser.add_argument("--gnn_type", type=str, default="none", choices=["gcn", "gat", "none"], help="GNN type: 'gcn', 'gat', or 'none'")
     parser.add_argument("--device", type=str, default=None, help="Device (cpu, cuda, mps). Auto-detect if None.")
 
     # --- Training Arguments ---
@@ -41,13 +41,13 @@ def main():
     parser.add_argument("--log_interval", type=int, default=1, help="Log interval")
     parser.add_argument("--model_path", type=str, default="final_model", help="Filename for saved model")
     parser.add_argument("--data_filter", type=str, default="all", choices=["all", "sp", "optimal"], help="Data filter strategy")
-    parser.add_argument("--min_hops", type=int, default=4, help="Minimum shortest path hops for filtering (default: 4)")
+    parser.add_argument("--min_hops", type=int, default=1, help="Minimum shortest path hops for filtering (default: 1)")
     
     # --- Benchmark Arguments ---
     parser.add_argument("--run_benchmark", type=str2bool, default=True, help="Run benchmark after training?")
 
     parser.add_argument("--num_samples", type=int, default=100, help="Number of benchmark samples")
-    parser.add_argument("--env_type", type=str, default="deflation", choices=["kdn", "deflation"], help="Environment type: 'kdn' or 'deflation'")
+    parser.add_argument("--env_type", type=str, default="deflection", choices=["kdn", "deflection"], help="Environment type: 'kdn' or 'deflection'")
 
     args = parser.parse_args()
 

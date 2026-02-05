@@ -2,10 +2,10 @@ import numpy as np
 import networkx as nx
 from src.env import KDNEnvinronment
 
-class DeflationEnv(KDNEnvinronment):
+class DeflectionEnv(KDNEnvinronment):
     """
-    Inherits from KDNEnvinronment (Deflation Logic).
-    Only implements specific action masking for deflation.
+    Inherits from KDNEnvinronment (Deflection Logic).
+    Only implements specific action masking for deflection.
     """
     def action_masks(self):
         """

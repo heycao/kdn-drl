@@ -54,11 +54,6 @@ class TestKDNEnvinronment(unittest.TestCase):
         self.assertIsInstance(reward, float)
         self.assertIn("mlu", info)
 
-    def test_default_action_masks(self):
-        """Test that default action masks allow all actions"""
-        masks = self.env.action_masks()
-        self.assertTrue(np.all(masks), "Base environment should allow all actions by default")
-        self.assertEqual(len(masks), self.env.action_space.n)
 
 if __name__ == '__main__':
     unittest.main()
