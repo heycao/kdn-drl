@@ -82,3 +82,9 @@ uv run python main.py --total_timesteps 1024 --num_samples 100 --env_type masked
 ```bash
 uv run python main.py --total_timesteps 1024 --num_samples 100 --env_type masked --gnn_type gcn --data_filter optimal
 ```
+
+## Notebooks
+
+For quick experimentation and cloud execution (e.g., on Kaggle), you can use the provided notebooks in the `notebook/` directory:
+
+- [kdn-drl.ipynb](file:///Users/cmduc/Works/heycao/kdn-drl/notebook/kdn-drl.ipynb): A comprehensive notebook set up for Kaggle environments, including repo cloning, data downloading, and execution examples.
