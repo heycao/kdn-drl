@@ -76,7 +76,7 @@ def mask_fn(env):
 class Trainer:
     def __init__(self, tfrecords_dir, traffic_intensity, data_filter="all", n_envs=8, 
                  dataset_name=None, model_type="MaskPPO", gnn_type="gcn", 
-                 env_type="base", device=None, min_hops=4):
+                 env_type="base", device=None, min_hops=4, seed=None):
         self.tfrecords_dir = tfrecords_dir
         self.traffic_intensity = traffic_intensity
         self.data_filter = data_filter
@@ -86,6 +86,7 @@ class Trainer:
         self.gnn_type = gnn_type
         self.env_type = env_type
         self.min_hops = min_hops
+        self.seed = seed
         
         # Device detection
         if device:
@@ -203,6 +204,7 @@ class Trainer:
             n_envs=self.n_envs,
             env_kwargs=env_kwargs,
             vec_env_cls=None,
+            seed=self.seed
         )
 
         # Set up Policy and Features Extractor
@@ -252,7 +254,8 @@ class Trainer:
             # clip_range=0.2,
             # ent_coef=0.01,
             tensorboard_log="./logs/maskppo_tensorboard/",
-            device=self.device
+            device=self.device,
+            seed=self.seed
         )
 
         # Callbacks

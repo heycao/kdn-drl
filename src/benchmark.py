@@ -17,7 +17,7 @@ import multiprocessing
 class BenchmarkRunner:
     def __init__(self, tfrecords_dir, traffic_intensity, num_samples=10, 
                  ppo_path="agents/ppo_model", maskppo_path="agents/maskppo_model", 
-                 agent_type="MaskPPO", env_type="base", model_instance=None):
+                 agent_type="MaskPPO", env_type="base", model_instance=None, seed=None):
         self.tfrecords_dir = tfrecords_dir
         self.traffic_intensity = traffic_intensity
         self.num_samples = num_samples
@@ -26,6 +26,7 @@ class BenchmarkRunner:
         self.agent_type = agent_type
         self.env_type = env_type
         self.model_instance = model_instance
+        self.seed = seed
         
         # Determine device
         self.device = "cpu"
@@ -129,22 +130,18 @@ class BenchmarkRunner:
                             if 'mlu' in info: episode_mlu = info['mlu']
                             if info.get('is_success', False): episode_success = True
                             
-                if env_type == "masked" or True: # All current envs use this
-                    # Use Best-So-Far metrics found during episode
-                    episode_mlu = local_env.min_mlu_so_far
-                    p_len = len(local_env.best_path_so_far)
+                    # Use FINAL path metrics (not best-so-far)
+                    episode_mlu = local_env.current_mlu
+                    p_len = len(local_env.current_path)
                     
                     if local_env.original_mlu - episode_mlu > 1e-4:
                         episode_success = True
-                else:
-                    # Fallback for any old envs
-                    p_len = len(local_env.current_path)
-                
-                if episode_success:
-                    sample_success_count += 1
-                
-                sample_mlus.append(episode_mlu)
-                sample_path_lengths.append(p_len)
+                    
+                    if episode_success:
+                        sample_success_count += 1
+                    
+                    sample_mlus.append(episode_mlu)
+                    sample_path_lengths.append(p_len)
             
             return sample_mlus, sample_path_lengths, sample_success_count, sample_episodes
 

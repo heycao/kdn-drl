@@ -28,6 +28,7 @@ You can customize the execution using command-line arguments.
 | `--model_type` | str | `MaskPPO` | Model type identifier |
 | `--gnn_type` | str | `none` | GNN feature extractor: `gcn`, `gat`, or `none` |
 | `--device` | str | `Auto` | Device to run on (`cpu`, `cuda`, `mps`) |
+| `--seed` | int | `42` | Random seed for reproducibility |
 
 #### Training Configuration
 

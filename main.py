@@ -10,8 +10,28 @@ import sys
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
+import random
+import numpy as np
+import torch
 from src.trainer import Trainer
 from src.benchmark import BenchmarkRunner
+
+def set_seed(seed: int):
+    """Set seeds for reproducibility."""
+    if seed is None:
+        return
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # For MPS (Mac)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
+    
+    # Ensure deterministic behavior
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 def main():
     parser = argparse.ArgumentParser(description="KDN-DRL: Train and Benchmark")
@@ -34,6 +54,7 @@ def main():
     parser.add_argument("--model_type", type=str, default="MaskPPO", help="Model type identifier (default: MaskPPO)")
     parser.add_argument("--gnn_type", type=str, default="none", choices=["gcn", "gat", "none"], help="GNN type: 'gcn', 'gat', or 'none'")
     parser.add_argument("--device", type=str, default=None, help="Device (cpu, cuda, mps). Auto-detect if None.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
 
     # --- Training Arguments ---
     parser.add_argument("--total_timesteps", type=int, default=100_000, help="Total training timesteps")
@@ -47,9 +68,12 @@ def main():
     parser.add_argument("--run_benchmark", type=str2bool, default=True, help="Run benchmark after training?")
 
     parser.add_argument("--num_samples", type=int, default=100, help="Number of benchmark samples")
-    parser.add_argument("--env_type", type=str, default="deflection", choices=["kdn", "deflection"], help="Environment type: 'kdn' or 'deflection'")
+    parser.add_argument("--env_type", type=str, default="base", choices=["base", "masked"], help="Environment type: 'base' (DeflectionEnv) or 'masked' (MaskedDeflectionEnv with action masking)")
 
     args = parser.parse_args()
+
+    # Set seeds
+    set_seed(args.seed)
 
     # 1. TRAINING PHASE
     print("\n" + "="*50)
@@ -66,7 +90,8 @@ def main():
         gnn_type=args.gnn_type,
         env_type=args.env_type,
         device=args.device,
-        min_hops=args.min_hops
+        min_hops=args.min_hops,
+        seed=args.seed
     )
     
     trainer.train(
@@ -106,7 +131,8 @@ def main():
             maskppo_path=maskppo_path,
             agent_type=agent_type_arg,
             env_type=args.env_type,
-            model_instance=trainer.model
+            model_instance=trainer.model,
+            seed=args.seed
         )
         
         runner.run()
