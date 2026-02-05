@@ -61,7 +61,7 @@ def main():
     parser.add_argument("--n_envs", type=int, default=1, help="Number of parallel environments")
     parser.add_argument("--log_interval", type=int, default=1, help="Log interval")
     parser.add_argument("--model_path", type=str, default="final_model", help="Filename for saved model")
-    parser.add_argument("--data_filter", type=str, default="all", choices=["all", "sp", "optimal"], help="Data filter strategy")
+    parser.add_argument("--data_filter", type=str, default="all", choices=["all", "sp", "oracle"], help="Data filter strategy")
     parser.add_argument("--min_hops", type=int, default=1, help="Minimum shortest path hops for filtering (default: 1)")
     
     # --- Benchmark Arguments ---

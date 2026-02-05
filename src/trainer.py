@@ -146,7 +146,7 @@ class Trainer:
                                 # Check hops condition: len(path) > min_hops + 1
                                 if len(shortest_path) > self.min_hops + 1:
                                     is_valid = True
-                        elif self.data_filter == 'optimal':
+                        elif self.data_filter == 'oracle':
                             # optimal path should be > 10% better than shortest path
                             if shortest_path and optimal_path:
                                 sp_mlu = sample.calculate_max_utilization(shortest_path, bg_loads)
