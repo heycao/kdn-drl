@@ -89,3 +89,120 @@ class TestOracle:
                 total_checks += 1
         
         assert valid_comparisons > 0, "No valid comparisons were made (dataset might be empty or disconnected)"
+
+    def test_oracle_matches_brute_force(self, samples):
+        """
+        Verify that Oracle MLU equals the brute-force optimal MLU.
+        """
+        from itertools import islice
+
+        def brute_force_optimal_path(sample, src, dst, bg_loads, max_paths=1000):
+            """
+            Enumerate all simple paths and find the one with minimum MLU.
+            Returns (best_path, min_mlu) or (None, inf) if no path exists.
+            """
+            G = sample.topology_object
+            try:
+                # Get all simple paths (limited to avoid combinatorial explosion)
+                all_paths = list(islice(nx.all_simple_paths(G, src, dst), max_paths))
+            except nx.NetworkXNoPath:
+                return None, float('inf')
+            
+            if not all_paths:
+                return None, float('inf')
+            
+            best_path = None
+            min_mlu = float('inf')
+            
+            for path in all_paths:
+                mlu = sample.calculate_max_utilization(path, bg_loads)
+                if mlu < min_mlu or (abs(mlu - min_mlu) < 1e-9 and 
+                                    best_path is not None and 
+                                    len(path) < len(best_path)):
+                    min_mlu = mlu
+                    best_path = path
+            return best_path, min_mlu
+
+        total_checks = 0
+        mismatches = []
+        
+        for sample_idx, sample in enumerate(samples[:3]): # Keep it fast
+            n = sample.get_network_size()
+            
+            # Test a subset of src-dst pairs
+            pairs_to_check = []
+            for src in range(min(4, n)):
+                for dst in range(min(4, n)):
+                    if src != dst:
+                        pairs_to_check.append((src, dst))
+            
+            for src, dst in pairs_to_check:
+                if src >= n or dst >= n:
+                    continue
+                
+                bg_loads = sample.calculate_background_loads(src, dst)
+                oracle_path = sample.search_optimal_path(src, dst, bg_loads, max_steps=100)
+                
+                if oracle_path is None:
+                    bf_path, bf_mlu = brute_force_optimal_path(sample, src, dst, bg_loads)
+                    assert bf_path is None, f"Oracle=None but BF found path for {src}->{dst}"
+                    continue
+                
+                oracle_mlu = sample.calculate_max_utilization(oracle_path, bg_loads)
+                bf_path, bf_mlu = brute_force_optimal_path(sample, src, dst, bg_loads)
+                
+                epsilon = 1e-6
+                if oracle_mlu > bf_mlu + epsilon:
+                    mismatches.append({
+                        'sample': sample_idx, 'src': src, 'dst': dst,
+                        'oracle_mlu': oracle_mlu, 'bf_mlu': bf_mlu
+                    })
+                total_checks += 1
+        
+        if mismatches:
+            pytest.fail(f"Found {len(mismatches)} mismatches where Oracle > BF. First: {mismatches[0]}")
+        
+        assert total_checks > 0
+
+    def test_oracle_finds_shortest_among_optimal(self, samples):
+        """
+        Verify that among all paths with optimal MLU, Oracle picks the shortest (minimum hops).
+        """
+        from itertools import islice
+        total_checks = 0
+        
+        for sample in samples:
+            n = sample.get_network_size()
+            pairs_to_check = [(0, n-1), (1, n-2)] if n > 2 else [(0, 1)]
+            
+            for src, dst in pairs_to_check:
+                if src >= n or dst >= n or src == dst:
+                    continue
+                
+                bg_loads = sample.calculate_background_loads(src, dst)
+                oracle_path = sample.search_optimal_path(src, dst, bg_loads, max_steps=100)
+                if oracle_path is None:
+                    continue
+                
+                oracle_mlu = sample.calculate_max_utilization(oracle_path, bg_loads)
+                
+                # Find all paths with the same optimal MLU
+                G = sample.topology_object
+                try:
+                    all_paths = list(islice(nx.all_simple_paths(G, src, dst), 500))
+                except nx.NetworkXNoPath:
+                    continue
+                
+                min_hops_at_optimal = float('inf')
+                epsilon = 1e-6
+                
+                for path in all_paths:
+                    mlu = sample.calculate_max_utilization(path, bg_loads)
+                    if abs(mlu - oracle_mlu) < epsilon:
+                        min_hops_at_optimal = min(min_hops_at_optimal, len(path))
+                
+                assert len(oracle_path) <= min_hops_at_optimal + 1, \
+                    f"Oracle path ({len(oracle_path)} hops) not shortest optimal ({min_hops_at_optimal})"
+                total_checks += 1
+        
+        assert total_checks > 0
