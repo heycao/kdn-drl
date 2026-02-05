@@ -7,8 +7,8 @@ from sb3_contrib import MaskablePPO
 from tqdm import tqdm
 import networkx as nx
 
-from src.env import KDNEnvinronment
-from src.deflection_env import DeflectionEnv
+from src.env import DeflectionEnv
+from src.masked_env import MaskedDeflectionEnv
 from src.datanet import Datanet
 from src.gcn import GCNFeatureExtractor
 from joblib import Parallel, delayed
@@ -17,7 +17,7 @@ import multiprocessing
 class BenchmarkRunner:
     def __init__(self, tfrecords_dir, traffic_intensity, num_samples=10, 
                  ppo_path="agents/ppo_model", maskppo_path="agents/maskppo_model", 
-                 agent_type="MaskPPO", env_type="kdn", model_instance=None):
+                 agent_type="MaskPPO", env_type="base", model_instance=None):
         self.tfrecords_dir = tfrecords_dir
         self.traffic_intensity = traffic_intensity
         self.num_samples = num_samples
@@ -69,13 +69,13 @@ class BenchmarkRunner:
             model_instance.save(temp_model_path)
             agent_path = temp_model_path
 
-        def eval_single_sample(sample, agent_path, agent_label, traffic_intensity, tfrecords_dir, env_type="kdn"):
+        def eval_single_sample(sample, agent_path, agent_label, traffic_intensity, tfrecords_dir, env_type="base"):
             # Create a local environment for this worker
             if agent_label == 'MaskPPO':
-                if env_type == "deflection":
-                    local_env = DeflectionEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                if env_type == "masked":
+                    local_env = MaskedDeflectionEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                 else:
-                    local_env = KDNEnvinronment(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                    local_env = DeflectionEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                     
                 # Attempt to load with custom extractors if they exist
                 custom_objects = {}
@@ -87,10 +87,10 @@ class BenchmarkRunner:
                 use_masking = True
             else:
                 # PPO case (usually unmasked)
-                if env_type == "deflection":
-                     local_env = DeflectionEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                if env_type == "masked":
+                     local_env = MaskedDeflectionEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                 else:
-                    local_env = KDNEnvinronment(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+                    local_env = DeflectionEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
                 local_model = PPO.load(agent_path, device="cpu")
                 use_masking = False
             
@@ -129,7 +129,7 @@ class BenchmarkRunner:
                             if 'mlu' in info: episode_mlu = info['mlu']
                             if info.get('is_success', False): episode_success = True
                             
-                if env_type == "deflection" or True: # All current envs use this
+                if env_type == "masked" or True: # All current envs use this
                     # Use Best-So-Far metrics found during episode
                     episode_mlu = local_env.min_mlu_so_far
                     p_len = len(local_env.best_path_so_far)
@@ -194,7 +194,7 @@ class BenchmarkRunner:
         n_jobs = min(multiprocessing.cpu_count(), len(samples), 8)
 
         def eval_single_baseline(sample, traffic_intensity, tfrecords_dir):
-            local_env = KDNEnvinronment(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
+            local_env = DeflectionEnv(tfrecords_dir=tfrecords_dir, traffic_intensity=traffic_intensity)
             local_env.sample = sample
             G = sample.topology_object
             n = sample.get_network_size()
@@ -375,7 +375,7 @@ class BenchmarkRunner:
         # Check agents
         if self.agent_type in ['PPO', 'all']:
             print(f"\nInitializing environment for PPO...")
-            env = KDNEnvinronment(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
+            env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
             try:
                 model_inst = self.model_instance if self.agent_type == 'PPO' else None
                 res = self.evaluate_agent_mlu(self.ppo_path, env, samples, 'PPO', model_instance=model_inst)
@@ -385,10 +385,10 @@ class BenchmarkRunner:
                 
         if self.agent_type in ['MaskPPO', 'all']:
             print(f"\nInitializing environment for MaskPPO ({self.env_type})...")
-            if self.env_type == "deflection":
-                env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
+            if self.env_type == "masked":
+                env = MaskedDeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
             else:
-                env = KDNEnvinronment(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
+                env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
             try:
                 model_inst = self.model_instance if self.agent_type == 'MaskPPO' else None
                 res = self.evaluate_agent_mlu(self.maskppo_path, env, samples, 'MaskPPO', model_instance=model_inst)
@@ -400,7 +400,7 @@ class BenchmarkRunner:
 
         # Baseline & Oracle
         print(f"\nInitializing environment for Baselines...")
-        env = KDNEnvinronment(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
+        env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=self.traffic_intensity)
         baseline_results = self.evaluate_baselines(env, samples)
         
         if results_dict:

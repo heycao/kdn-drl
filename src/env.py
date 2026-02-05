@@ -5,7 +5,7 @@ import numpy as np
 import networkx as nx
 from src.datanet import Datanet
 
-class KDNEnvinronment(gym.Env):
+class DeflectionEnv(gym.Env):
     """
     Environment where the agent iteratively removes edges to force rerouting
     to find an optimal path with minimal MLU.

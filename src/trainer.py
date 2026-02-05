@@ -10,8 +10,8 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback,
 from stable_baselines3.common.env_util import make_vec_env
 from tqdm import tqdm
 
-from src.env import KDNEnvinronment
-from src.deflection_env import DeflectionEnv
+from src.env import DeflectionEnv
+from src.masked_env import MaskedDeflectionEnv
 from src.gcn import GCNFeatureExtractor
 from src.gat import GATFeatureExtractor
 from src.datanet import Datanet
@@ -76,7 +76,7 @@ def mask_fn(env):
 class Trainer:
     def __init__(self, tfrecords_dir, traffic_intensity, data_filter="all", n_envs=8, 
                  dataset_name=None, model_type="MaskPPO", gnn_type="gcn", 
-                 env_type="kdn", device=None, min_hops=4):
+                 env_type="base", device=None, min_hops=4):
         self.tfrecords_dir = tfrecords_dir
         self.traffic_intensity = traffic_intensity
         self.data_filter = data_filter
@@ -186,11 +186,11 @@ class Trainer:
         }
 
         # Select Environment Class
-        if self.env_type == "deflection":
-            env_cls = DeflectionEnv
+        if self.env_type == "masked":
+            env_cls = MaskedDeflectionEnv
         else:
-            # Default to base kdn environment
-            env_cls = KDNEnvinronment
+            # Default to base deflection environment
+            env_cls = DeflectionEnv
 
         # Auto-detect if environment supports masking
         use_masking = hasattr(env_cls, 'action_masks')

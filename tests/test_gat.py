@@ -11,7 +11,7 @@ from sklearn.metrics import r2_score
 
 # Ensure src is in path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.env import KDNEnvinronment
+from src.env import DeflectionEnv
 # Import GAT instead of GCN
 try:
     from src.gat import GATFeatureExtractor
@@ -180,7 +180,7 @@ def real_env():
             data_dir = 'data/nsfnetbw'
         elif os.path.exists('../data/nsfnetbw'):
             data_dir = '../data/nsfnetbw'
-    env = KDNEnvinronment(tfrecords_dir=data_dir, traffic_intensity=9)
+    env = DeflectionEnv(tfrecords_dir=data_dir, traffic_intensity=9)
     return env
 
 def test_gat_probe_accuracy(real_env):

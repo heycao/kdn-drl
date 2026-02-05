@@ -1,10 +1,10 @@
 import numpy as np
 import networkx as nx
-from src.env import KDNEnvinronment
+from src.env import DeflectionEnv
 
-class DeflectionEnv(KDNEnvinronment):
+class MaskedDeflectionEnv(DeflectionEnv):
     """
-    Inherits from KDNEnvinronment (Deflection Logic).
+    Inherits from DeflectionEnv (Deflection Logic).
     Only implements specific action masking for deflection.
     """
     def action_masks(self):

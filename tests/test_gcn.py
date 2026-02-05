@@ -166,10 +166,10 @@ class TestGCNFeatureExtractor:
     def test_gcn_probe_accuracy(self, setup_gcn):
         """
         Verify that GCN features are predictive of MLU using REAL data from Datanet.
-        This uses the DeflationEnv to load existing TFRecords.
+        This uses the MaskedDeflectionEnv to load existing TFRecords.
         """
         import os
-        from src.deflection_env import DeflectionEnv
+        from src.masked_env import MaskedDeflectionEnv
         
         # 1. Setup Environment with Real Data
         data_dir = 'data/nsfnetbw'
@@ -178,9 +178,9 @@ class TestGCNFeatureExtractor:
 
         # Initialize environment (using same logic as training)
         try:
-            env = DeflectionEnv(tfrecords_dir=data_dir, traffic_intensity=9)
+            env = MaskedDeflectionEnv(tfrecords_dir=data_dir, traffic_intensity=9)
         except Exception as e:
-            pytest.fail(f"Failed to initialize DeflationEnv: {e}")
+            pytest.fail(f"Failed to initialize MaskedDeflectionEnv: {e}")
             
         # 2. Initialize GCN with Env's Observation Space
         obs_space = env.observation_space
@@ -202,7 +202,7 @@ class TestGCNFeatureExtractor:
                 # Should handle end of dataset if num_samples > dataset size
                 env.reader = iter(env.reader) # Reset reader? Or just re-init
                 # For simplicity, if dataset exhaustion happens, break or handle.
-                # DeflationEnv.reset handles iteration internally mostly.
+                # MaskedDeflectionEnv.reset handles iteration internally mostly.
                 env.reset()
                 
             # 1. Primary path (Shortest Path on Reset)

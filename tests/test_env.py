@@ -2,9 +2,9 @@ import unittest
 import numpy as np
 import networkx as nx
 import os
-from src.env import KDNEnvinronment
+from src.env import DeflectionEnv
 
-class TestKDNEnvinronment(unittest.TestCase):
+class TestDeflectionEnv(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # path to data
@@ -13,7 +13,7 @@ class TestKDNEnvinronment(unittest.TestCase):
             raise unittest.SkipTest("Data directory not found at data/nsfnetbw")
 
     def setUp(self):
-        self.env = KDNEnvinronment(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
+        self.env = DeflectionEnv(tfrecords_dir=self.tfrecords_dir, traffic_intensity=9, max_steps=10)
         self.obs, _ = self.env.reset()
 
     def test_initial_state(self):

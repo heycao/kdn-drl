@@ -11,7 +11,7 @@ The primary entry point is `main.py`, which handles both training and benchmarki
 To run the default training and benchmarking pipeline:
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 ### Configuration Arguments
@@ -19,8 +19,9 @@ python main.py
 You can customize the execution using command-line arguments.
 
 #### Common Arguments
+
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| :--- | :--- | :--- | :--- |
 | `--tfrecords_dir` | str | `data/nsfnetbw` | Path to dataset root directory |
 | `--traffic_intensity` | int | `15` | Traffic intensity filter level |
 | `--dataset_name` | str | `None` | (Optional) Dataset name |
@@ -29,8 +30,9 @@ You can customize the execution using command-line arguments.
 | `--device` | str | `Auto` | Device to run on (`cpu`, `cuda`, `mps`) |
 
 #### Training Configuration
+
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| :--- | :--- | :--- | :--- |
 | `--total_timesteps` | int | `100_000` | Total training timesteps |
 | `--n_envs` | int | `1` | Number of parallel environments |
 | `--log_interval` | int | `1` | Interval for logging metrics |
@@ -39,25 +41,29 @@ You can customize the execution using command-line arguments.
 | `--min_hops` | int | `1` | Minimum shortest path hops for filtering |
 
 #### Environment & Benchmark Configuration
+
 | Argument | Type | Default | Description |
-|----------|------|---------|-------------|
+| :--- | :--- | :--- | :--- |
 | `--run_benchmark` | bool | `True` | Whether to run benchmark after training |
 | `--num_samples` | int | `100` | Number of samples for benchmarking |
-| `--env_type` | str | `deflection` | Environment type: `kdn`, `deflection` |
+| `--env_type` | str | `base` | Environment type: `base` (DeflectionEnv), `masked` (MaskedDeflectionEnv) |
 
 ### Examples
 
-**Train with GAT Feature Extractor and more timesteps:**
+#### Naive Deflection
+
 ```bash
-python main.py --gnn_type gcn --total_timesteps 200000
+uv run python main.py --total_timesteps 1024 --num_samples 100 --env_type base --data_filter optimal
 ```
 
-**Train on specific dataset (GEANT2) and intensity:**
+#### Masked Env
+
 ```bash
-python main.py --tfrecords_dir data/nsfnetbw --traffic_intensity 15
+uv run python main.py --total_timesteps 1024 --num_samples 100 --env_type masked --data_filter optimal
 ```
 
-**Run Training only (Skip Benchmark):**
+#### GCN Masked Env
+
 ```bash
-python main.py --run_benchmark False
+uv run python main.py --total_timesteps 1024 --num_samples 100 --env_type masked --gnn_type gcn --data_filter optimal
 ```
