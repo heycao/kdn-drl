@@ -12,8 +12,9 @@ class DeflectionEnv(gym.Env):
     Action Space: Discrete(num_edges) - Remove edge at index.
     Observation Space: Dict containing traffic, path, and edge features.
     """
-    def __init__(self, tfrecords_dir=None, traffic_intensity=15, max_steps=20, prefiltered_samples=None):
+    def __init__(self, tfrecords_dir=None, traffic_intensity=15, max_steps=20, prefiltered_samples=None, patience=5):
         super().__init__()
+        self.patience = patience
         
         if not tfrecords_dir:
             raise ValueError("tfrecords_dir is required")
@@ -109,6 +110,7 @@ class DeflectionEnv(gym.Env):
         self.original_mlu = self.current_mlu
         self.min_mlu_so_far = self.current_mlu
         self.best_path_so_far = list(self.current_path)
+        self.steps_without_improvement = 0
         
         # Calculate Optimal Path for this request
         self.optimal_path = self.sample.search_optimal_path(src, dst, self.bg_loads, max_steps=100)
@@ -124,21 +126,7 @@ class DeflectionEnv(gym.Env):
         terminated = False
         info = {}
         
-        # 0. Check if we are already optimal (e.g. from reset)
-        if self.optimal_mlu is not None and self.current_mlu <= self.optimal_mlu + 1e-5:
-             # Already optimal
-             peak_loss_rate = 0.0
-             if self.current_mlu > 1.0:
-                 peak_loss_rate = 1.0 - (1.0 / self.current_mlu)
-                 
-             return self._get_obs(), 0.0, True, False, {
-                 "reached_optimal_mlu": True, 
-                 "is_success": True, 
-                 "is_optimal": True,
-                 "mlu": self.current_mlu,
-                 "gap_score": 100.0,
-                 "peak_loss_rate": peak_loss_rate
-             }
+
 
         self.current_step += 1
         if self.current_step >= self.max_steps:
@@ -179,10 +167,17 @@ class DeflectionEnv(gym.Env):
         gap = self.original_mlu - current_mlu
         reward = gap * 10.0
         
-        # Update best so far
-        if current_mlu < self.min_mlu_so_far:
+        # Update best so far and patience counter
+        if current_mlu < self.min_mlu_so_far - 1e-6:
             self.min_mlu_so_far = current_mlu
             self.best_path_so_far = list(new_path)
+            self.steps_without_improvement = 0
+        else:
+            self.steps_without_improvement += 1
+            
+        # Terminate if patience exhausted (no improvement for `patience` steps)
+        if self.steps_without_improvement >= self.patience:
+            terminated = True
             
         # Check success condition
         if self.original_mlu - current_mlu > 1e-4:

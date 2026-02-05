@@ -130,9 +130,9 @@ class BenchmarkRunner:
                             if 'mlu' in info: episode_mlu = info['mlu']
                             if info.get('is_success', False): episode_success = True
                             
-                    # Use FINAL path metrics (not best-so-far)
-                    episode_mlu = local_env.current_mlu
-                    p_len = len(local_env.current_path)
+                    # Use BEST path metrics (best MLU found during episode)
+                    episode_mlu = local_env.min_mlu_so_far
+                    p_len = len(local_env.best_path_so_far)
                     
                     if local_env.original_mlu - episode_mlu > 1e-4:
                         episode_success = True
